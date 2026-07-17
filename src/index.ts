@@ -3,9 +3,14 @@ import { stepCountIs, streamText, type ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
 import { createInterface } from "node:readline";
-import { calculatorTool, weatherTool } from "./tools/utility-tools"
+import { calculatorTool, weatherTool } from "./tools/utility-tools";
+import { agentLoop } from "./agent/loop";
 
 const tools = { get_weather: weatherTool, calculator: calculatorTool };
+
+const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
+需要查询信息时，主动使用工具，不要编造数据。
+回答要简洁直接。`;
 
 const qwen = createOpenAI({
   baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -34,37 +39,7 @@ function ask() {
 
     messages.push({ role: "user", content: trimmed });
 
-    const result = streamText({
-      model,
-      system: `你是 Super Agent，一个专注于软件开发的 AI 助手。
-你说话简洁直接，喜欢用代码示例来解释问题。
-如果用户的问题不够清晰，你会反问而不是瞎猜。`,
-      messages,
-      tools,
-      stopWhen: stepCountIs(5),
-    });
-
-    process.stdout.write("Assistant: ");
-    let fullResponse = "";
-    for await (const part of result.fullStream) {
-      switch (part.type) {
-        case "text-delta":
-          process.stdout.write(part.text);
-          fullResponse += part.text;
-          break;
-        case "tool-call":
-          console.log(
-            `\n  [调用工具: ${part.toolName}(${JSON.stringify(part.input)})]`,
-          );
-          break;
-        case "tool-result":
-          console.log(`  [工具返回: ${JSON.stringify(part.output)}]`);
-          break;
-      }
-    }
-    console.log(); // 换行
-
-    messages.push({ role: "assistant", content: fullResponse });
+    await agentLoop(model, tools, messages, SYSTEM);
 
     ask();
   });
