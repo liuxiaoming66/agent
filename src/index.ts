@@ -3,7 +3,7 @@ import { stepCountIs, streamText, type ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
 import { createInterface } from "node:readline";
-import { calculatorTool, weatherTool } from "./tools/utility-tools";
+import { calculatorTool, weatherTool } from "./tools/utility-tools"
 
 const tools = { get_weather: weatherTool, calculator: calculatorTool };
 
