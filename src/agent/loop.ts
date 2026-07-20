@@ -6,7 +6,7 @@ import {
   resetHistory,
 } from "./loop-detection.js";
 import { isRetryable, calculateDelay, sleep } from "./retry.js";
-import { ToolRegistry } from "./tool-registry.js";
+import { ToolRegistry } from "../tools/registry.js";
 
 const MAX_STEPS = 15;
 const MAX_RETRIES = 3;
@@ -44,7 +44,6 @@ export async function agentLoop(
       try {
         const deferredHint = registry.getDeferredToolSummary();
         const finalSystem = deferredHint ? `${system}\n${deferredHint}` : system;
-        console.log(`\n=== System Prompt ===\n${finalSystem}\n====================\n`);
         const result = streamText({
           model,
           system: finalSystem,

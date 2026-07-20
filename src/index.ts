@@ -1,12 +1,11 @@
 import "dotenv/config";
-import { stepCountIs, streamText, type ModelMessage } from "ai";
+import { type ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
 import { createInterface, emitKeypressEvents } from "node:readline";
-import { allTools, calculatorTool, weatherTool } from "./tools/utility-tools";
-import { agentLoop } from "./agent-loop";
-import { ToolDefinition, ToolRegistry } from "./tool-registry";
-import { MCPClient } from "./mcp-client";
+import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
+import type { ToolDefinition } from "./tools/index.js";
+import { agentLoop } from "./agent/loop.js";
 
 const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
 需要查询信息时，主动使用工具，不要编造数据。
