@@ -2,9 +2,9 @@ import "dotenv/config";
 import { stepCountIs, streamText, type ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
-import { createInterface } from "node:readline";
+import { createInterface, emitKeypressEvents } from "node:readline";
 import { calculatorTool, weatherTool } from "./tools/utility-tools";
-import { agentLoop } from "./agent/loop";
+import { agentLoop } from "./agent-loop";
 
 const tools = { get_weather: weatherTool, calculator: calculatorTool };
 
@@ -18,12 +18,35 @@ const qwen = createOpenAI({
 });
 
 const model = process.env.DASHSCOPE_API_KEY
-  ? qwen.chat("qwen-plus-latest")
+  ? qwen.chat("qwen3.7-plus")
   : createMockModel();
 
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
+});
+
+let exiting = false;
+
+function exitRepl() {
+  if (exiting) return;
+  exiting = true;
+  console.log("\nBye!");
+  rl.close();
+  process.exit(0);
+}
+
+if (process.stdin.isTTY) {
+  emitKeypressEvents(process.stdin, rl);
+}
+
+rl.on("SIGINT", exitRepl);
+process.on("SIGINT", exitRepl);
+
+process.stdin.on("keypress", (_str, key) => {
+  if (key?.name === "escape") {
+    exitRepl();
+  }
 });
 
 const messages: ModelMessage[] = [];
@@ -32,8 +55,7 @@ function ask() {
   rl.question("\nYou: ", async (input) => {
     const trimmed = input.trim();
     if (!trimmed || trimmed === "exit") {
-      console.log("Bye!");
-      rl.close();
+      exitRepl();
       return;
     }
 
@@ -45,5 +67,7 @@ function ask() {
   });
 }
 
-console.log('Super Agent v0.1 (type "exit" to quit)\n');
+console.log(
+  'Super Agent v0.1 (type "exit", Esc, or Ctrl+C to quit)\n',
+);
 ask();
