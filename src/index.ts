@@ -75,6 +75,8 @@ function ask() {
     await agentLoop(model, registry, messages, SYSTEM, {
       used: 0,
       limit: 10000,
+      inputTokens: 0,
+      outputTokens: 0,
     });
 
     ask();
