@@ -1,6 +1,12 @@
 import type { ToolDefinition } from "../tool-registry";
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+  existsSync,
+} from "node:fs";
+import { join, resolve, relative, sep } from "node:path";
 
 export const weatherTool: ToolDefinition = {
   name: "get_weather",
@@ -112,16 +118,20 @@ export const listDirectoryTool: ToolDefinition = {
   },
 };
 export const editFileTool: ToolDefinition = {
-  name: 'edit_file',
-  description: '精确替换文件中的指定内容。用 old_string 定位要替换的文本，用 new_string 替换它。不是全量覆写——只改你指定的部分',
+  name: "edit_file",
+  description:
+    "精确替换文件中的指定内容。用 old_string 定位要替换的文本，用 new_string 替换它。不是全量覆写——只改你指定的部分",
   parameters: {
-    type: 'object',
+    type: "object",
     properties: {
-      path: { type: 'string', description: '文件路径' },
-      old_string: { type: 'string', description: '要被替换的原始文本（必须精确匹配）' },
-      new_string: { type: 'string', description: '替换后的新文本' },
+      path: { type: "string", description: "文件路径" },
+      old_string: {
+        type: "string",
+        description: "要被替换的原始文本（必须精确匹配）",
+      },
+      new_string: { type: "string", description: "替换后的新文本" },
     },
-    required: ['path', 'old_string', 'new_string'],
+    required: ["path", "old_string", "new_string"],
     additionalProperties: false,
   },
   isConcurrencySafe: false,
@@ -130,7 +140,7 @@ export const editFileTool: ToolDefinition = {
     const resolved = resolve(path);
     if (!existsSync(resolved)) return `文件不存在: ${path}`;
 
-    const content = readFileSync(resolved, 'utf-8');
+    const content = readFileSync(resolved, "utf-8");
     const count = content.split(old_string).length - 1;
 
     if (count === 0) {
@@ -141,8 +151,99 @@ export const editFileTool: ToolDefinition = {
     }
 
     const updated = content.replace(old_string, new_string);
-    writeFileSync(resolved, updated, 'utf-8');
+    writeFileSync(resolved, updated, "utf-8");
     return `已替换 ${path} 中的内容（${old_string.length} → ${new_string.length} 字符）`;
+  },
+};
+
+export const globTool: ToolDefinition = {
+  name: "glob",
+  description:
+    '按模式搜索文件。支持 * 和 ** 通配符，如 "src/**/*.ts" 匹配 src 下所有 TypeScript 文件',
+  parameters: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: '搜索模式，如 "**/*.ts"、"src/*.json"',
+      },
+      path: { type: "string", description: "搜索起始目录，默认当前目录" },
+    },
+    required: ["pattern"],
+    additionalProperties: false,
+  },
+  isConcurrencySafe: true,
+  isReadOnly: true,
+  execute: async ({ pattern, path = "." }: { pattern: string; path?: string }) => {
+    const SKIP_DIRS = new Set(["node_modules", ".git"]);
+    const MAX_RESULTS = 100;
+    const root = resolve(path);
+    const results: string[] = [];
+
+    // 将 glob 模式转为正则：
+    // **/ 或 /** 匹配零或多层目录，* 匹配单层内任意字符（不含路径分隔符），? 匹配单字符
+    const S = "[/\\\\]"; // 路径分隔符字符类
+    let regexStr = "";
+    let i = 0;
+    while (i < pattern.length) {
+      if (pattern[i] === "*" && pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          regexStr += `(?:.+${S})?`; // **/ → 零或多层目录
+          i += 3;
+        } else {
+          regexStr += ".*"; // 末尾 ** → 匹配一切
+          i += 2;
+        }
+      } else if (pattern[i] === "*") {
+        regexStr += `[^/\\\\]*`;
+        i++;
+      } else if (pattern[i] === "?") {
+        regexStr += `[^/\\\\]`;
+        i++;
+      } else if (pattern[i] === "/") {
+        regexStr += S;
+        i++;
+      } else {
+        regexStr += pattern[i].replace(/[.+^${}()|[\]\\]/g, "\\$&");
+        i++;
+      }
+    }
+    const regex = new RegExp(`^${regexStr}$`);
+
+    function walk(dir: string): void {
+      if (results.length >= MAX_RESULTS) return;
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of entries) {
+        if (results.length >= MAX_RESULTS) return;
+        const fullPath = join(dir, name);
+        let stat;
+        try {
+          stat = statSync(fullPath);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          if (SKIP_DIRS.has(name)) continue;
+          walk(fullPath);
+        } else {
+          const rel = relative(root, fullPath).split(sep).join("/");
+          if (regex.test(rel)) {
+            results.push(rel);
+          }
+        }
+      }
+    }
+
+    walk(root);
+
+    if (results.length === 0) return "未找到匹配的文件";
+    const suffix = results.length >= MAX_RESULTS ? `\n...（已达上限 ${MAX_RESULTS} 条）` : "";
+    return results.join("\n") + suffix;
   },
 };
 
@@ -152,5 +253,6 @@ export const allTools: ToolDefinition[] = [
   readFileTool,
   writeFileTool,
   listDirectoryTool,
-  editFileTool
+  editFileTool,
+  globTool,
 ];
