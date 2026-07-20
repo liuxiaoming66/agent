@@ -42,9 +42,12 @@ export async function agentLoop(
     // 步骤级重试：包裹整个 stream 消费过程
     for (let attempt = 1; ; attempt++) {
       try {
+        const deferredHint = registry.getDeferredToolSummary();
+        const finalSystem = deferredHint ? `${system}\n${deferredHint}` : system;
+        console.log(`\n=== System Prompt ===\n${finalSystem}\n====================\n`);
         const result = streamText({
           model,
-          system,
+          system: finalSystem,
           tools: registry.toAISDKFormat(),
           messages,
           maxRetries: 0,

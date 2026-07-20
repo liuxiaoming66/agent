@@ -8,6 +8,8 @@ export interface ToolDefinition {
   isConcurrencySafe?: boolean;
   isReadOnly?: boolean;
   maxResultChars?: number;
+  shouldDefer?: boolean;
+  searchHint?: string;
   execute: (input: any) => Promise<unknown>;
 }
 
@@ -15,6 +17,7 @@ const DEFAULT_MAX_RESULT_CHARS = 3000;
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
+  private discoveredTools = new Set<string>();
 
   // 三个状态变量构成一把读写锁
   private exclusiveLock = false; // 当前是否有独占锁持有者
@@ -67,7 +70,8 @@ export class ToolRegistry {
 
   toAISDKFormat(): Record<string, any> {
     const result: Record<string, any> = {};
-    for (const [name, tool] of this.tools) {
+    for (const tool of this.getActiveTools()) {
+      const name = tool.name;
       const maxChars = tool.maxResultChars;
       const executeFn = tool.execute;
       const isSafe = tool.isConcurrencySafe === true;
@@ -104,6 +108,73 @@ export class ToolRegistry {
     return result;
   }
 
+  getActiveTools(): ToolDefinition[] {
+    return this.getAll().filter((tool) => {
+      if (tool.shouldDefer && !this.discoveredTools.has(tool.name)) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  searchTools(query: string): ToolDefinition[] {
+    const q = query.trim();
+    const results: ToolDefinition[] = [];
+
+    const names = q.includes(",")
+      ? q
+          .split(",")
+          .map((n) => n.trim())
+          .filter(Boolean)
+      : [q];
+
+    for (const name of names) {
+      const tool = this.tools.get(name);
+      if (tool && tool.name !== "tool_search") {
+        results.push(tool);
+        this.discoveredTools.add(tool.name);
+      }
+    }
+    return results;
+  }
+
+  getDeferredToolSummary(): string {
+    const deferred = this.getAll().filter((tool) => {
+      return tool.shouldDefer && !this.discoveredTools.has(tool.name);
+    });
+
+    if (deferred.length === 0) return "";
+
+    const lines = deferred.map((t) => {
+      const hint = t.searchHint ? ` — ${t.searchHint}` : "";
+      return `  - ${t.name}${hint}`;
+    });
+
+    return `\n以下工具可用，但需要先通过 tool_search 搜索获取完整定义：\n${lines.join("\n")}`;
+  }
+
+  countTokenEstimate(): { active: number; deferred: number; total: number } {
+    let active = 0;
+    let deferred = 0;
+
+    for (const tool of this.tools.values()) {
+      const schemaSize = JSON.stringify({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      }).length;
+      const tokens = Math.ceil(schemaSize / 4);
+
+      if (tool.shouldDefer && !this.discoveredTools.has(tool.name)) {
+        deferred += tokens;
+      } else {
+        active += tokens;
+      }
+    }
+
+    return { active, deferred, total: active + deferred };
+  }
+
   private mcpClients: Array<MCPClient> = [];
 
   async registerMCPServer(
@@ -130,6 +201,8 @@ export class ToolRegistry {
         isConcurrencySafe: true,
         isReadOnly: true,
         maxResultChars: 3000,
+        shouldDefer: true,
+        searchHint: `${serverName} ${tool.name} ${tool.description}`,
         execute: async (input: any) => {
           return toolClient.callTool(originalName, input);
         },
