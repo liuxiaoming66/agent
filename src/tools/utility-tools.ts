@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import type { ToolDefinition } from "../tool-registry";
 import {
   readFileSync,
@@ -174,7 +175,13 @@ export const globTool: ToolDefinition = {
   },
   isConcurrencySafe: true,
   isReadOnly: true,
-  execute: async ({ pattern, path = "." }: { pattern: string; path?: string }) => {
+  execute: async ({
+    pattern,
+    path = ".",
+  }: {
+    pattern: string;
+    path?: string;
+  }) => {
     const SKIP_DIRS = new Set(["node_modules", ".git"]);
     const MAX_RESULTS = 100;
     const root = resolve(path);
@@ -242,8 +249,156 @@ export const globTool: ToolDefinition = {
     walk(root);
 
     if (results.length === 0) return "未找到匹配的文件";
-    const suffix = results.length >= MAX_RESULTS ? `\n...（已达上限 ${MAX_RESULTS} 条）` : "";
+    const suffix =
+      results.length >= MAX_RESULTS
+        ? `\n...（已达上限 ${MAX_RESULTS} 条）`
+        : "";
     return results.join("\n") + suffix;
+  },
+};
+
+export const grepTool: ToolDefinition = {
+  name: "grep",
+  description: "在文件中搜索匹配指定模式的内容。返回匹配的行号和内容",
+  parameters: {
+    type: "object",
+    properties: {
+      pattern: { type: "string", description: "搜索模式（正则表达式）" },
+      path: {
+        type: "string",
+        description: "搜索路径（文件或目录），默认当前目录",
+      },
+    },
+    required: ["pattern"],
+    additionalProperties: false,
+  },
+  isConcurrencySafe: true,
+  isReadOnly: true,
+  maxResultChars: 3000,
+  execute: async ({
+    pattern,
+    path = ".",
+  }: {
+    pattern: string;
+    path?: string;
+  }) => {
+    const SKIP_DIRS = new Set(["node_modules", ".git"]);
+    const MAX_MATCHES = 50;
+    const resolved = resolve(path);
+    const matches: string[] = [];
+
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, "i");
+    } catch {
+      return `无效的正则表达式: ${pattern}`;
+    }
+
+    // 简单判断是否为二进制文件（含 NULL 字节）
+    function isBinary(buf: Buffer): boolean {
+      const len = Math.min(buf.length, 8192);
+      for (let i = 0; i < len; i++) {
+        if (buf[i] === 0) return true;
+      }
+      return false;
+    }
+
+    function searchFile(filePath: string): void {
+      if (matches.length >= MAX_MATCHES) return;
+      let buf: Buffer;
+      try {
+        buf = readFileSync(filePath);
+      } catch {
+        return;
+      }
+      if (isBinary(buf)) return;
+
+      const lines = buf.toString("utf-8").split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (matches.length >= MAX_MATCHES) return;
+        if (regex.test(lines[i])) {
+          const rel = relative(process.cwd(), filePath).split(sep).join("/");
+          matches.push(`${rel}:${i + 1}: ${lines[i].trimEnd()}`);
+        }
+      }
+    }
+
+    function walk(dir: string): void {
+      if (matches.length >= MAX_MATCHES) return;
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of entries) {
+        if (matches.length >= MAX_MATCHES) return;
+        const fullPath = join(dir, name);
+        let stat;
+        try {
+          stat = statSync(fullPath);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          if (SKIP_DIRS.has(name)) continue;
+          walk(fullPath);
+        } else {
+          searchFile(fullPath);
+        }
+      }
+    }
+
+    // 支持传入单个文件或目录
+    const stat = statSync(resolved);
+    if (stat.isFile()) {
+      searchFile(resolved);
+    } else {
+      walk(resolved);
+    }
+
+    if (matches.length === 0) return "未找到匹配内容";
+    const suffix =
+      matches.length >= MAX_MATCHES
+        ? `\n...（已达上限 ${MAX_MATCHES} 条）`
+        : "";
+    return matches.join("\n") + suffix;
+  },
+};
+
+export const bashTool: ToolDefinition = {
+  name: "bash",
+  description:
+    "执行 shell 命令并返回输出。适合运行脚本、检查环境、执行构建等操作",
+  parameters: {
+    type: "object",
+    properties: {
+      command: { type: "string", description: "要执行的 shell 命令" },
+    },
+    required: ["command"],
+    additionalProperties: false,
+  },
+  isConcurrencySafe: false,
+  isReadOnly: false,
+  maxResultChars: 3000,
+  execute: async ({ command }) => {
+    // 先检测环境是否支持 child_process
+    try {
+      execSync("echo test", { stdio: "ignore" });
+    } catch {
+      return `[bash 不可用] 当前环境不支持 shell 命令。本地终端运行可使用。`;
+    }
+
+    try {
+      const output = execSync(command, {
+        encoding: "utf-8",
+        timeout: 10000, // 10 秒超时
+        maxBuffer: 1024 * 1024,
+      });
+      return output || "(命令执行成功，无输出)";
+    } catch (err: any) {
+      return `命令执行失败 (exit ${err.status || 1}):\n${err.stderr || err.message}`;
+    }
   },
 };
 
@@ -255,4 +410,6 @@ export const allTools: ToolDefinition[] = [
   listDirectoryTool,
   editFileTool,
   globTool,
+  grepTool,
+  bashTool
 ];
