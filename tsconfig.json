@@ -6,7 +6,9 @@
     "strict": true,
     "esModuleInterop": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "types": ["node"],
+    "skipLibCheck": true
   },
   "include": ["src"]
 }

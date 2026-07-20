@@ -54,15 +54,6 @@ async function connectMCP() {
   }
 }
 
-console.log(`已注册 ${registry.getAll().length} 个工具：`);
-for (const tool of registry.getAll()) {
-  const flags = [
-    tool.isConcurrencySafe ? "可并发" : "串行",
-    tool.isReadOnly ? "只读" : "读写",
-  ].join(", ");
-  console.log(`  - ${tool.name}（${flags}）`);
-}
-
 const model = process.env.DASHSCOPE_API_KEY
   ? qwen.chat("qwen3.7-plus")
   : createMockModel();
@@ -122,6 +113,16 @@ console.log('Super Agent v0.1 (type "exit", Esc, or Ctrl+C to quit)\n');
 
 async function main() {
   await connectMCP();
+
+  console.log(`\n已注册 ${registry.getAll().length} 个工具：`);
+  for (const tool of registry.getAll()) {
+    const flags = [
+      tool.isConcurrencySafe ? "可并发" : "串行",
+      tool.isReadOnly ? "只读" : "读写",
+    ].join(", ");
+    console.log(`  - ${tool.name}（${flags}）`);
+  }
+
   ask();
 }
 
