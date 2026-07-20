@@ -61,13 +61,11 @@ function ask() {
 
     messages.push({ role: "user", content: trimmed });
 
-    await agentLoop(model, tools, messages, SYSTEM);
+    await agentLoop(model, tools, messages, SYSTEM, { used: 0, limit: 10000 });
 
     ask();
   });
 }
 
-console.log(
-  'Super Agent v0.1 (type "exit", Esc, or Ctrl+C to quit)\n',
-);
+console.log('Super Agent v0.1 (type "exit", Esc, or Ctrl+C to quit)\n');
 ask();
