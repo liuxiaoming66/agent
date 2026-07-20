@@ -6,6 +6,7 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import { allTools, calculatorTool, weatherTool } from "./tools/utility-tools";
 import { agentLoop } from "./agent-loop";
 import { ToolRegistry } from "./tool-registry";
+import { MCPClient } from "./mcp-client";
 
 const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
 需要查询信息时，主动使用工具，不要编造数据。
@@ -18,6 +19,40 @@ const qwen = createOpenAI({
 
 const registry = new ToolRegistry();
 registry.register(...allTools);
+async function connectMCP() {
+  const githubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+
+  let canSpawn = true;
+  try {
+    const { execSync } = await import("node:child_process");
+    execSync("echo test", { stdio: "ignore" });
+  } catch {
+    canSpawn = false;
+  }
+
+  if (githubToken && canSpawn) {
+    console.log("\n连接 GitHub MCP Server...");
+    try {
+      const client = new MCPClient(
+        "npx",
+        ["-y", "@modelcontextprotocol/server-github"],
+        { GITHUB_PERSONAL_ACCESS_TOKEN: githubToken },
+      );
+      const tools = await registry.registerMCPServer("github", client);
+      console.log(`  已注册 ${tools.length} 个 MCP 工具`);
+      return;
+    } catch (err) {
+      console.log(
+        `  MCP 连接失败: ${err instanceof Error ? err.message : err}`,
+      );
+      console.log("  降级为 Mock MCP...");
+    }
+  }
+
+  if (!githubToken) {
+    console.log("\n未配置 GITHUB_PERSONAL_ACCESS_TOKEN，使用 Mock MCP");
+  }
+}
 
 console.log(`已注册 ${registry.getAll().length} 个工具：`);
 for (const tool of registry.getAll()) {
@@ -84,4 +119,10 @@ function ask() {
 }
 
 console.log('Super Agent v0.1 (type "exit", Esc, or Ctrl+C to quit)\n');
-ask();
+
+async function main() {
+  await connectMCP();
+  ask();
+}
+
+main();
