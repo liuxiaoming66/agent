@@ -7,10 +7,15 @@ import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
 import type { ToolDefinition } from "./tools/index.js";
 import { agentLoop } from "./agent/loop.js";
 import { SessionStore } from "./session/store";
+import { coreRules, deferredTools, PromptBuilder, sessionContext, toolGuide, type PromptContext } from "./context/prompt-builder";
 
-const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
-需要查询信息时，主动使用工具，不要编造数据。
-回答要简洁直接。`;
+const builder = new PromptBuilder()
+  .pipe("coreRules", coreRules())
+  .pipe("toolGuide", toolGuide())
+  .pipe("deferredTools", deferredTools())
+  .pipe("sessionContext", sessionContext());
+
+let SYSTEM = "";
 
 const qwen = createOpenAI({
   baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -383,6 +388,15 @@ async function main() {
   const allCount = registry.getAll().length;
   const activeTools = registry.getActiveTools();
   const estimate = registry.countTokenEstimate();
+
+  const promptCtx: PromptContext = {
+    toolCount: registry.getActiveTools().length,
+    deferredToolSummary: registry.getDeferredToolSummary(),
+    sessionMessageCount: messages.length,
+    sessionId: "default",
+  };
+  SYSTEM = builder.build(promptCtx);
+  builder.debug(promptCtx); // 显示各模块状态
 
   console.log(`\n=== 工具统计 ===`);
   console.log(`  全部工具: ${allCount} 个`);
