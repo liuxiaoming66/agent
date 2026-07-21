@@ -6,6 +6,7 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
 import type { ToolDefinition } from "./tools/index.js";
 import { agentLoop } from "./agent/loop.js";
+import { UsageTracker } from "./usage/tracker.js";
 import { SessionStore } from "./session/store";
 import {
   coreRules,
@@ -110,6 +111,7 @@ const model = (
 
 const isContinue = process.argv.includes("--continue");
 const store = new SessionStore("default");
+const tracker = new UsageTracker();
 
 let messages: ModelMessage[] = [];
 let summary = "";
@@ -219,12 +221,19 @@ function ask() {
     // 每轮对话前执行统一防御管线（从轻到重）
     await runDefensePipeline();
 
-    await agentLoop(model, registry, messages, SYSTEM, {
-      used: 0,
-      limit: 10000,
-      inputTokens: 0,
-      outputTokens: 0,
-    });
+    await agentLoop(
+      model,
+      registry,
+      messages,
+      SYSTEM,
+      {
+        used: 0,
+        limit: 10000,
+        inputTokens: 0,
+        outputTokens: 0,
+      },
+      tracker,
+    );
 
     // 本轮新增的消息（user + assistant + tool-call/result）追加持久化
     store.appendAll(messages.slice(prevLen));

@@ -7,6 +7,7 @@ import {
 } from "./loop-detection.js";
 import { isRetryable, calculateDelay, sleep } from "./retry.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { normalizeUsage, type UsageTracker } from "../usage/tracker.js";
 
 const MAX_STEPS = 15;
 const MAX_RETRIES = 3;
@@ -24,8 +25,11 @@ export async function agentLoop(
   messages: ModelMessage[],
   system: string,
   budget: BudgetState,
+  tracker?: UsageTracker,
 ) {
   let step = 0;
+  console.log('model',model)
+  const modelId: string = model.modelId ?? "unknown";
   resetHistory();
 
   while (step < MAX_STEPS) {
@@ -130,6 +134,22 @@ export async function agentLoop(
     console.log(
       `  [Token] 输入: ${budget.inputTokens} | 输出: ${budget.outputTokens} | 总计: ${budget.used}/${budget.limit} (${pct}%)`,
     );
+
+    // 用量统计：归一化后记入 tracker，每步明确标注缓存命中情况
+    const norm = normalizeUsage(stepUsage);
+    const stepRecord = tracker?.record(modelId, norm);
+    if (stepRecord) {
+      if (norm.cacheReadTokens > 0) {
+        const totalInput =
+          norm.inputTokens + norm.cacheReadTokens + norm.cacheWriteTokens;
+        const hitRate = Math.round((norm.cacheReadTokens / totalInput) * 100);
+        console.log(
+          `  [Cost] $${stepRecord.cost.toFixed(5)} · ✅ 缓存命中 ${norm.cacheReadTokens} tokens（命中率 ${hitRate}%）`,
+        );
+      } else {
+        console.log(`  [Cost] $${stepRecord.cost.toFixed(5)} · ⚪ 未命中缓存`);
+      }
+    }
     // if (budget.used > budget.limit) {
     //   console.log("\n[Token 预算耗尽，强制停止]");
     //   break;
