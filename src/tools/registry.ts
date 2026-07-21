@@ -1,5 +1,6 @@
 import { jsonSchema } from "ai";
 import { MCPClient } from "./mcp-client.js";
+import { estimateTextTokens } from "../context/compressor.js";
 
 export interface ToolDefinition {
   name: string;
@@ -158,12 +159,13 @@ export class ToolRegistry {
     let deferred = 0;
 
     for (const tool of this.tools.values()) {
-      const schemaSize = JSON.stringify({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-      }).length;
-      const tokens = Math.ceil(schemaSize / 4);
+      const tokens = estimateTextTokens(
+        JSON.stringify({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        }),
+      );
 
       if (tool.shouldDefer && !this.discoveredTools.has(tool.name)) {
         deferred += tokens;

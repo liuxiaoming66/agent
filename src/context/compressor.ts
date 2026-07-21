@@ -19,10 +19,17 @@ export interface CompactionResult {
   compressedCount: number;
 }
 
-/** 粗略估算 token 数（约 4 字符 ≈ 1 token） */
+/** 估算一段文本的 token 数：中日韩约 1.5 字/token，其余约 4 字符/token */
+export function estimateTextTokens(text: string): number {
+  const cjk =
+    text.match(/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g)?.length ?? 0;
+  const other = text.length - cjk;
+  return Math.ceil(cjk / 1.5 + other / 4);
+}
+
+/** 粗略估算消息序列的 token 数 */
 export function estimateTokens(messages: ModelMessage[]): number {
-  const text = JSON.stringify(messages);
-  return Math.ceil(text.length / 4);
+  return estimateTextTokens(JSON.stringify(messages));
 }
 
 /** 将消息序列化为纯文本，供压缩 prompt 使用 */

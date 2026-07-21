@@ -23,6 +23,7 @@ import {
   CONTEXT_TOKEN_THRESHOLD,
 } from "./context/compressor";
 import { applyDefense } from "./context/defense";
+import { buildContextSnapshot, renderContextMatrix } from "./context/view";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -211,6 +212,18 @@ function ask() {
     const trimmed = input.trim();
     if (!trimmed || trimmed === "exit") {
       exitRepl();
+      return;
+    }
+
+    // /context 命令：打印上下文占用看板，不进入模型调用
+    if (trimmed === "/context") {
+      const snapshot = buildContextSnapshot({
+        system: SYSTEM,
+        toolsTokens: registry.countTokenEstimate().active,
+        messages,
+      });
+      console.log(renderContextMatrix(snapshot));
+      ask();
       return;
     }
 
