@@ -113,25 +113,48 @@ if (isContinue && store.exists()) {
   console.log(`[Session] 新会话`);
 }
 
-/** 两层压缩：Layer 1 清理旧工具结果，Layer 2 超阈值时摘要压缩 */
-async function compactMessages() {
-  // Layer 1: microcompact — 清理早期工具结果
+/**
+ * 统一上下文防御管线，从轻到重按顺序执行：
+ * Layer 2: 截断超长工具结果 + 总量预算清理
+ * Layer 3: TTL 软修剪 / 硬清除
+ * Token 估算: 判断是否需要 LLM 压缩
+ * Layer 4: Microcompact — 清理早期工具结果
+ * Layer 5: Summarization — 超阈值时 LLM 摘要压缩
+ */
+async function runDefensePipeline() {
+  // Layer 2 + 3: 截断 + TTL 修剪 + token 估算
+  const defense = applyDefense(messages, timestamps);
+  messages = defense.messages;
+  if (defense.truncated > 0 || defense.compacted > 0) {
+    console.log(`[Layer 2: 截断] ${defense.truncated} 个超长结果被截断, ${defense.compacted} 个被压缩清理`);
+  }
+  if (defense.softPruned > 0 || defense.hardPruned > 0) {
+    console.log(`[Layer 3: TTL] ${defense.softPruned} 个软修剪, ${defense.hardPruned} 个硬清除`);
+  }
+
+  // Token 估算：判断是否需要更重的压缩
+  let currentTokens = defense.tokenEstimate;
+  console.log(`[Token] ~${currentTokens} tokens`);
+  if (currentTokens <= CONTEXT_TOKEN_THRESHOLD) return; // 轻量手段已足够
+
+  // Layer 4: Microcompact — 清理早期工具结果
   const mc = microcompact(messages);
   messages = mc.messages;
   if (mc.cleared > 0) {
-    console.log(`[Layer 1: Microcompact] 清理了 ${mc.cleared} 个工具结果`);
+    console.log(`[Layer 4: Microcompact] 清理了 ${mc.cleared} 个工具结果`);
   }
 
-  // Layer 2: summarize — 超过 token 阈值时压缩为摘要
-  const currentTokens = estimateTokens(messages);
-  if (currentTokens > CONTEXT_TOKEN_THRESHOLD) {
-    console.log(`[Layer 2: Summarization] 当前 ~${currentTokens} tokens，超过阈值，压缩中...`);
-    const compResult = await summarize(model, messages, summary);
-    messages = compResult.messages;
-    summary = compResult.summary;
-    if (compResult.compressedCount > 0) {
-      console.log(`[Layer 2: Summarization] 压缩了 ${compResult.compressedCount} 条消息`);
-    }
+  // 重新估算，看是否还需要最重的手段
+  currentTokens = estimateTokens(messages);
+  if (currentTokens <= CONTEXT_TOKEN_THRESHOLD) return;
+
+  // Layer 5: Summarization — LLM 摘要压缩
+  console.log(`[Layer 5: Summarization] ~${currentTokens} tokens 仍超阈值，压缩中...`);
+  const compResult = await summarize(model, messages, summary);
+  messages = compResult.messages;
+  summary = compResult.summary;
+  if (compResult.compressedCount > 0) {
+    console.log(`[Layer 5: Summarization] 压缩了 ${compResult.compressedCount} 条消息`);
   }
 }
 
@@ -175,16 +198,8 @@ function ask() {
     messages.push({ role: "user", content: trimmed });
     timestamps.set(messages.length - 1, Date.now());
 
-    // 每轮对话前执行防线：截断 + TTL 修剪
-    const defense = applyDefense(messages, timestamps);
-    messages = defense.messages;
-    if (defense.truncated > 0 || defense.compacted > 0) {
-      console.log(`[Layer 2: 截断] ${defense.truncated} 个超长结果被截断, ${defense.compacted} 个被压缩清理`);
-    }
-    if (defense.softPruned > 0 || defense.hardPruned > 0) {
-      console.log(`[Layer 3: TTL] ${defense.softPruned} 个软修剪, ${defense.hardPruned} 个硬清除`);
-    }
-    console.log(`[Token] ~${defense.tokenEstimate} tokens`);
+    // 每轮对话前执行统一防御管线（从轻到重）
+    await runDefensePipeline();
 
     await agentLoop(model, registry, messages, SYSTEM, {
       used: 0,
@@ -195,9 +210,6 @@ function ask() {
 
     // 本轮新增的消息（user + assistant + tool-call/result）追加持久化
     store.appendAll(messages.slice(prevLen));
-
-    // 每轮对话结束后检查是否需要压缩
-    await compactMessages();
 
     ask();
   });
@@ -235,9 +247,9 @@ async function main() {
     console.log(`  - ${tool.name}（${flags}）`);
   }
 
-  // 启动时压缩：处理恢复的历史消息
+  // 启动时防御：处理恢复的历史消息
   if (messages.length > 0) {
-    await compactMessages();
+    await runDefensePipeline();
   }
 
   ask();
