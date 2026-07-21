@@ -42,23 +42,39 @@ export class SessionStore {
   }
 
   load(): ModelMessage[] {
+    return this.loadEntries().map((e) => e.message);
+  }
+
+  /** 加载消息并携带原始时间戳（供 TTL 防御使用） */
+  loadWithTimestamps(): { messages: ModelMessage[]; timestamps: Map<number, number> } {
+    const entries = this.loadEntries();
+    const messages: ModelMessage[] = [];
+    const timestamps = new Map<number, number>();
+    entries.forEach((entry, i) => {
+      messages.push(entry.message);
+      timestamps.set(i, new Date(entry.timestamp).getTime() || Date.now());
+    });
+    return { messages, timestamps };
+  }
+
+  private loadEntries(): SessionEntry[] {
     if (!existsSync(this.filePath)) return [];
     const content = readFileSync(this.filePath, "utf-8").trim();
     if (!content) return [];
 
-    const messages: ModelMessage[] = [];
+    const entries: SessionEntry[] = [];
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
         const entry: SessionEntry = JSON.parse(line);
         if (entry.type === "message") {
-          messages.push(entry.message);
+          entries.push(entry);
         }
       } catch {
         /* skip malformed lines */
       }
     }
-    return messages;
+    return entries;
   }
 
   exists(): boolean {

@@ -7,8 +7,20 @@ import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
 import type { ToolDefinition } from "./tools/index.js";
 import { agentLoop } from "./agent/loop.js";
 import { SessionStore } from "./session/store";
-import { coreRules, deferredTools, PromptBuilder, sessionContext, toolGuide, type PromptContext } from "./context/prompt-builder";
-import { microcompact, summarize, estimateTokens, CONTEXT_TOKEN_THRESHOLD } from "./context/compressor";
+import {
+  coreRules,
+  deferredTools,
+  PromptBuilder,
+  sessionContext,
+  toolGuide,
+  type PromptContext,
+} from "./context/prompt-builder";
+import {
+  microcompact,
+  summarize,
+  estimateTokens,
+  CONTEXT_TOKEN_THRESHOLD,
+} from "./context/compressor";
 import { applyDefense } from "./context/defense";
 
 const builder = new PromptBuilder()
@@ -92,22 +104,21 @@ const toolSearchTool: ToolDefinition = {
 
 registry.register(toolSearchTool);
 
-const model = (process.env.DASHSCOPE_API_KEY
-  ? qwen.chat("qwen3.7-plus")
-  : createMockModel()) as LanguageModel;
+const model = (
+  process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-plus") : createMockModel()
+) as LanguageModel;
 
 const isContinue = process.argv.includes("--continue");
 const store = new SessionStore("default");
 
 let messages: ModelMessage[] = [];
 let summary = "";
-const timestamps = new Map<number, number>(); // 消息索引 → 创建时间戳
+let timestamps = new Map<number, number>(); // 消息索引 → 创建时间戳
 
 if (isContinue && store.exists()) {
-  messages = store.load();
-  // 恢复的历史消息统一标记为当前时间（TTL 从恢复时刻起算）
-  const now = Date.now();
-  messages.forEach((_, i) => timestamps.set(i, now));
+  const restored = store.loadWithTimestamps();
+  messages = restored.messages;
+  timestamps = restored.timestamps;
   console.log(`[Session] 恢复会话，${messages.length} 条历史消息`);
 } else {
   console.log(`[Session] 新会话`);
@@ -125,12 +136,15 @@ async function runDefensePipeline() {
   // Layer 2 + 3: 截断 + TTL 修剪 + token 估算
   const defense = applyDefense(messages, timestamps);
   messages = defense.messages;
-  if (defense.truncated > 0 || defense.compacted > 0) {
-    console.log(`[Layer 2: 截断] ${defense.truncated} 个超长结果被截断, ${defense.compacted} 个被压缩清理`);
-  }
-  if (defense.softPruned > 0 || defense.hardPruned > 0) {
-    console.log(`[Layer 3: TTL] ${defense.softPruned} 个软修剪, ${defense.hardPruned} 个硬清除`);
-  }
+
+  // 诊断日志：始终输出，方便观察防御状态
+  const toolMsgCount = messages.filter((m) => m.role === "tool").length;
+  console.log(
+    `[Defense] 消息=${messages.length} 工具结果=${toolMsgCount} ` +
+      `截断=${defense.truncated} 压缩=${defense.compacted} ` +
+      `软修剪=${defense.softPruned} 硬清除=${defense.hardPruned} ` +
+      `~${defense.tokenEstimate} tokens`,
+  );
 
   // Token 估算：判断是否需要更重的压缩
   let currentTokens = defense.tokenEstimate;
@@ -149,12 +163,16 @@ async function runDefensePipeline() {
   if (currentTokens <= CONTEXT_TOKEN_THRESHOLD) return;
 
   // Layer 5: Summarization — LLM 摘要压缩
-  console.log(`[Layer 5: Summarization] ~${currentTokens} tokens 仍超阈值，压缩中...`);
+  console.log(
+    `[Layer 5: Summarization] ~${currentTokens} tokens 仍超阈值，压缩中...`,
+  );
   const compResult = await summarize(model, messages, summary);
   messages = compResult.messages;
   summary = compResult.summary;
   if (compResult.compressedCount > 0) {
-    console.log(`[Layer 5: Summarization] 压缩了 ${compResult.compressedCount} 条消息`);
+    console.log(
+      `[Layer 5: Summarization] 压缩了 ${compResult.compressedCount} 条消息`,
+    );
   }
 }
 
@@ -244,9 +262,7 @@ async function main() {
       tool.isConcurrencySafe ? "可并发" : "串行",
       tool.isReadOnly ? "只读" : "读写",
     ].join(", ");
-    console.log(`  - ${tool.name}（${flags}）`);
   }
-
   // 启动时防御：处理恢复的历史消息
   if (messages.length > 0) {
     await runDefensePipeline();
