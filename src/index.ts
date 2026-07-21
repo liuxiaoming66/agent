@@ -6,6 +6,7 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
 import type { ToolDefinition } from "./tools/index.js";
 import { agentLoop } from "./agent/loop.js";
+import { SessionStore } from "./session/store";
 
 const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
 需要查询信息时，主动使用工具，不要编造数据。
@@ -306,6 +307,17 @@ const model = process.env.DASHSCOPE_API_KEY
   ? qwen.chat("qwen3.7-plus")
   : createMockModel();
 
+const isContinue = process.argv.includes("--continue");
+const store = new SessionStore("default");
+
+let messages: ModelMessage[] = [];
+if (isContinue && store.exists()) {
+  messages = store.load();
+  console.log(`[Session] 恢复会话，${messages.length} 条历史消息`);
+} else {
+  console.log(`[Session] 新会话`);
+}
+
 const rl = createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -334,8 +346,6 @@ process.stdin.on("keypress", (_str, key) => {
   }
 });
 
-const messages: ModelMessage[] = [];
-
 function ask() {
   rl.question("\nYou: ", async (input) => {
     const trimmed = input.trim();
@@ -344,6 +354,7 @@ function ask() {
       return;
     }
 
+    const prevLen = messages.length;
     messages.push({ role: "user", content: trimmed });
 
     await agentLoop(model, registry, messages, SYSTEM, {
@@ -352,6 +363,9 @@ function ask() {
       inputTokens: 0,
       outputTokens: 0,
     });
+
+    // 本轮新增的消息（user + assistant + tool-call/result）追加持久化
+    store.appendAll(messages.slice(prevLen));
 
     ask();
   });
