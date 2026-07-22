@@ -28,4 +28,4 @@ export type { ToolDefinition } from "./registry.js";
 export { MCPClient } from "./mcp-client.js";
 export { createToolSearchTool } from "./tool-search.js";
 export { createMemoryTool } from "./memory-tools.js";
-export type { MemoryStore } from "./memory-tools.js";
+export type { MemoryStore, MemoryEntry } from "../memory/store.js";

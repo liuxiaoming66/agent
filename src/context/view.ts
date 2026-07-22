@@ -20,13 +20,14 @@ const CELLS = GRID * GRID;
 
 const RESET = "\x1b[0m";
 
-type SliceKind = "system" | "tools" | "messages" | "free" | "buffer";
+type SliceKind = "system" | "memory" | "tools" | "messages" | "free" | "buffer";
 
 const STYLE: Record<
   SliceKind,
   { glyph: string; color: string; label: string }
 > = {
   system: { glyph: "●", color: "\x1b[35m", label: "System Prompt" }, // 紫
+  memory: { glyph: "●", color: "\x1b[32m", label: "记忆" }, // 绿
   tools: { glyph: "●", color: "\x1b[33m", label: "工具定义" }, // 黄
   messages: { glyph: "●", color: "\x1b[36m", label: "消息历史" }, // 青
   free: { glyph: "○", color: "\x1b[90m", label: "空闲" }, // 灰
@@ -37,6 +38,7 @@ const STYLE: Record<
 export interface ContextSnapshot {
   windowSize: number;
   systemTokens: number;
+  memoryTokens: number;
   toolsTokens: number;
   messagesTokens: number;
   bufferTokens: number;
@@ -47,12 +49,17 @@ export function buildContextSnapshot(opts: {
   system: string;
   toolsTokens: number;
   messages: ModelMessage[];
+  memorySection?: string;
   windowSize?: number;
   bufferTokens?: number;
 }): ContextSnapshot {
+  const memoryTokens = opts.memorySection
+    ? estimateTextTokens(opts.memorySection)
+    : 0;
   return {
     windowSize: opts.windowSize ?? CONTEXT_WINDOW,
     systemTokens: estimateTextTokens(opts.system),
+    memoryTokens,
     toolsTokens: opts.toolsTokens,
     messagesTokens: estimateTokens(opts.messages),
     bufferTokens: opts.bufferTokens ?? OUTPUT_BUFFER,
@@ -61,26 +68,28 @@ export function buildContextSnapshot(opts: {
 
 /** 渲染 16×16 方块矩阵 + 图例 + 占比明细，返回可直接 console.log 的字符串。 */
 export function renderContextMatrix(snapshot: ContextSnapshot): string {
-  const { windowSize, systemTokens, toolsTokens, messagesTokens, bufferTokens } =
+  const { windowSize, systemTokens, memoryTokens, toolsTokens, messagesTokens, bufferTokens } =
     snapshot;
 
   const perCell = windowSize / CELLS;
   const cellsFor = (tokens: number) => Math.round(tokens / perCell);
 
   let systemCells = cellsFor(systemTokens);
+  let memoryCells = cellsFor(memoryTokens);
   let toolsCells = cellsFor(toolsTokens);
   let bufferCells = cellsFor(bufferTokens);
   let messagesCells = cellsFor(messagesTokens);
 
   // 超出窗口时优先压缩消息历史的显示格数，保证矩阵不溢出
-  const fixed = systemCells + toolsCells + bufferCells;
+  const fixed = systemCells + memoryCells + toolsCells + bufferCells;
   if (fixed + messagesCells > CELLS) {
     messagesCells = Math.max(0, CELLS - fixed);
   }
-  const freeCells = CELLS - (systemCells + toolsCells + messagesCells + bufferCells);
+  const freeCells = CELLS - (systemCells + memoryCells + toolsCells + messagesCells + bufferCells);
 
   const cells: SliceKind[] = [
     ...Array<SliceKind>(systemCells).fill("system"),
+    ...Array<SliceKind>(memoryCells).fill("memory"),
     ...Array<SliceKind>(toolsCells).fill("tools"),
     ...Array<SliceKind>(messagesCells).fill("messages"),
     ...Array<SliceKind>(freeCells).fill("free"),
@@ -98,7 +107,7 @@ export function renderContextMatrix(snapshot: ContextSnapshot): string {
   }
 
   // 占比明细
-  const used = systemTokens + toolsTokens + messagesTokens;
+  const used = systemTokens + memoryTokens + toolsTokens + messagesTokens;
   const pct = (n: number) => `${((n / windowSize) * 100).toFixed(1)}%`;
   const fmt = (n: number) => n.toLocaleString();
   const line = (kind: SliceKind, tokens: number) =>
@@ -115,6 +124,7 @@ export function renderContextMatrix(snapshot: ContextSnapshot): string {
     ...rows,
     "",
     line("system", systemTokens),
+    line("memory", memoryTokens),
     line("tools", toolsTokens),
     line("messages", messagesTokens),
     line("free", windowSize - used - bufferTokens),

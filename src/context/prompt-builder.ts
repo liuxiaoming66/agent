@@ -63,3 +63,15 @@ export function sessionContext(): PipeFn {
     return `[会话信息] 已有 ${ctx.sessionMessageCount} 条历史消息`;
   };
 }
+
+/**
+ * 记忆上下文 pipe：将已保存的记忆索引注入 system prompt，
+ * 让模型每轮都能“记得”用户偏好、项目信息等。
+ */
+export function memoryContext(getMemorySection: () => string): PipeFn {
+  return () => {
+    const section = getMemorySection();
+    if (!section) return null;
+    return section;
+  };
+}

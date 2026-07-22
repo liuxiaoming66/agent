@@ -5,12 +5,15 @@ import { createMockModel } from "./mock-model";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
 import { createToolSearchTool } from "./tools/tool-search.js";
+import { createMemoryTool } from "./tools/memory-tools.js";
+import { MemoryStore } from "./memory/store.js";
 import { agentLoop } from "./agent/loop.js";
 import { UsageTracker } from "./usage/tracker.js";
 import { SessionStore } from "./session/store";
 import {
   coreRules,
   deferredTools,
+  memoryContext,
   PromptBuilder,
   sessionContext,
   toolGuide,
@@ -32,7 +35,8 @@ const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
   .pipe("toolGuide", toolGuide())
   .pipe("deferredTools", deferredTools())
-  .pipe("sessionContext", sessionContext());
+  .pipe("sessionContext", sessionContext())
+  .pipe("memoryContext", memoryContext(() => memoryStore.buildPromptSection()));
 
 let SYSTEM = "";
 
@@ -79,6 +83,10 @@ async function connectMCP() {
 }
 
 registry.register(createToolSearchTool(registry));
+
+const memoryStore = new MemoryStore();
+memoryStore.init();
+registry.register(createMemoryTool(memoryStore));
 
 const model = (
   process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-plus") : createMockModel()
@@ -217,6 +225,7 @@ function ask() {
       model,
       makePromptCtx,
       ask,
+      memoryStore,
     };
     const handled = dispatch(trimmed, cmdCtx);
     if (handled) return; // 命令已处理（同步或异步）

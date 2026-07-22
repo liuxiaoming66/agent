@@ -9,10 +9,12 @@ const contextCommand: CommandHandler = (cmd, ctx) => {
   if (cmd === "/context") {
     const promptCtx = ctx.makePromptCtx();
     const system = ctx.builder.build(promptCtx);
+    const memorySection = ctx.memoryStore?.buildPromptSection() ?? "";
     const snapshot = buildContextSnapshot({
       system,
       toolsTokens: ctx.registry.countTokenEstimate().active,
       messages: ctx.messages,
+      memorySection,
     });
     console.log(renderContextMatrix(snapshot));
     ctx.ask();

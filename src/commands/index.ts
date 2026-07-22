@@ -3,7 +3,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import type { PromptBuilder, PromptContext } from "../context/prompt-builder.js";
 import type { UsageTracker } from "../usage/tracker.js";
 import type { SessionStore } from "../session/store.js";
-import type { MemoryStore } from "../tools/memory-tools.js";
+import type { MemoryStore } from "../memory/store.js";
 
 export interface CommandContext {
   messages: ModelMessage[];

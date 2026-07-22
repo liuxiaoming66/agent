@@ -1,12 +1,5 @@
 import type { ToolDefinition } from "./registry.js";
-
-/**
- * MemoryStore 接口占位 —— 等 memory 模块实现后替换为真实导入
- */
-export interface MemoryStore {
-  search(query: string): Promise<string[]>;
-  save(content: string): Promise<void>;
-}
+import type { MemoryStore, MemoryEntry } from "../memory/store.js";
 
 /**
  * 创建 memory 工具实例。
@@ -16,52 +9,84 @@ export function createMemoryTool(memoryStore: MemoryStore): ToolDefinition {
   return {
     name: "memory",
     description:
-      "搜索或保存记忆。传入 action='search' + query 检索相关记忆，或 action='save' + content 保存新记忆",
+      "管理跨会话记忆。action: save（保存）| list（列表）| search（搜索）| read（读取）| delete（删除）",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["search", "save"],
-          description: "操作类型：search 检索 / save 保存",
+          enum: ["save", "list", "search", "read", "delete"],
         },
-        query: {
+        name: { type: "string", description: "记忆名称（save 时必填）" },
+        description: {
           type: "string",
-          description: "检索关键词（action=search 时必填）",
+          description: "一句话描述（save 时必填）",
         },
-        content: {
+        type: {
           type: "string",
-          description: "要保存的内容（action=save 时必填）",
+          enum: ["user", "feedback", "project", "reference"],
+        },
+        content: { type: "string", description: "记忆内容（save 时必填）" },
+        query: { type: "string", description: "搜索关键词（search 时必填）" },
+        filename: {
+          type: "string",
+          description: "文件名（read/delete 时必填）",
         },
       },
       required: ["action"],
       additionalProperties: false,
     },
-    isConcurrencySafe: true,
+    isConcurrencySafe: false,
     isReadOnly: false,
-    execute: async ({
-      action,
-      query,
-      content,
-    }: {
-      action: string;
-      query?: string;
-      content?: string;
-    }) => {
-      if (action === "search") {
-        if (!query) return "缺少 query 参数";
-        const results = await memoryStore.search(query);
-        if (results.length === 0) return "没有找到相关记忆";
-        return results;
+    execute: async (args: any) => {
+      switch (args.action) {
+        case "save": {
+          if (!args.name || !args.type || !args.content) {
+            return "保存失败：需要 name、type、content 参数";
+          }
+          const filename = memoryStore.save({
+            name: args.name,
+            description: args.description || args.name,
+            type: args.type,
+            content: args.content,
+          });
+          return `已保存到记忆: ${filename}`;
+        }
+        case "list": {
+          const entries: MemoryEntry[] = memoryStore.list();
+          if (entries.length === 0) return "当前没有存储任何记忆。";
+          return (
+            `记忆列表（共 ${entries.length} 条记忆）：\n` +
+            entries
+              .map((e: MemoryEntry) => `  [${e.type}] ${e.name} — ${e.description} (${e.filePath})`)
+              .join("\n")
+          );
+        }
+        case "search": {
+          const results: MemoryEntry[] = memoryStore.search(args.query || "");
+          if (results.length === 0)
+            return `没有找到与 "${args.query}" 相关的记忆。`;
+          return (
+            `搜索结果（${results.length} 条匹配）：\n` +
+            results
+              .map((e: MemoryEntry) => `  [${e.type}] ${e.name} — ${e.description} (${e.filePath})`)
+              .join("\n")
+          );
+        }
+        case "read": {
+          if (!args.filename) return "读取失败：需要 filename 参数";
+          const entry = memoryStore.read(args.filename);
+          if (!entry) return `未找到文件: ${args.filename}`;
+          return `## ${entry.name}\n\n${entry.description}\n\n---\n\n${entry.content}`;
+        }
+        case "delete": {
+          if (!args.filename) return "删除失败：需要 filename 参数";
+          const ok = memoryStore.delete(args.filename);
+          return ok ? `已删除: ${args.filename}` : `未找到文件: ${args.filename}`;
+        }
+        default:
+          return `未知 action: ${args.action}`;
       }
-
-      if (action === "save") {
-        if (!content) return "缺少 content 参数";
-        await memoryStore.save(content);
-        return "记忆已保存";
-      }
-
-      return `未知 action: ${action}`;
     },
   };
 }
