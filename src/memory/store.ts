@@ -7,6 +7,10 @@ export interface MemoryEntry {
   type: "user" | "feedback" | "project" | "reference";
   content: string;
   filePath: string;
+  /** 最后一次写入时间（ms 时间戳） */
+  lastWriteAt?: number;
+  /** 最后一次读取时间（ms 时间戳） */
+  lastReadAt?: number;
 }
 
 const MEMORY_DIR = ".memory";
@@ -42,7 +46,9 @@ export class MemoryStore {
   private loadIndex(): string {
     if (!fs.existsSync(this.indexPath)) return "";
     const raw = fs.readFileSync(this.indexPath, "utf-8").trim();
-    const lines = raw.split("\n").filter((l) => !l.startsWith("#") && l.trim() !== "");
+    const lines = raw
+      .split("\n")
+      .filter((l) => !l.startsWith("#") && l.trim() !== "");
     return lines.join("\n");
   }
 
@@ -62,14 +68,17 @@ export class MemoryStore {
       "记忆索引：",
       index,
       "",
-      "使用 memory 工具的 read 操作来读取具体记忆内容。",
-      "记忆是线索，不是事实——使用前先验证其准确性。",
+      "记忆使用原则：",
+      "- 记忆是线索，不是事实——使用前先用工具验证（read_file、grep 确认）",
+      "- 不存代码能推导的、git 能查的、文档已经写了的",
+      "- 只存对话中出现的、其他地方推导不出来的信息",
     ];
     return lines.join("\n");
   }
 
   save(entry: Omit<MemoryEntry, "filePath">): string {
     this.init();
+    const now = Date.now();
     const slug = entry.name
       .toLowerCase()
       .replace(/[^a-z0-9一-鿿]+/g, "-")
@@ -77,11 +86,17 @@ export class MemoryStore {
     const filename = `${entry.type}_${slug}.md`;
     const filePath = path.join(this.memoryDir, filename);
 
+    // 保留已有的 lastReadAt（如果文件已存在）
+    const existing = this.read(filename);
+    const lastReadAt = existing?.lastReadAt;
+
     const fileContent = [
       "---",
       `name: ${entry.name}`,
       `description: ${entry.description}`,
       `type: ${entry.type}`,
+      `lastWriteAt: ${now}`,
+      ...(lastReadAt ? [`lastReadAt: ${lastReadAt}`] : []),
       "---",
       "",
       entry.content,
@@ -111,6 +126,8 @@ export class MemoryStore {
         type: (parsed.meta.type as MemoryEntry["type"]) ?? "reference",
         content: parsed.body.slice(0, MAX_FILE_CHARS),
         filePath: file,
+        lastWriteAt: parsed.meta.lastWriteAt ? Number(parsed.meta.lastWriteAt) : undefined,
+        lastReadAt: parsed.meta.lastReadAt ? Number(parsed.meta.lastReadAt) : undefined,
       });
     }
     return entries;
@@ -126,19 +143,37 @@ export class MemoryStore {
     });
   }
 
-  /** 读取单条记忆的完整内容 */
+  /** 读取单条记忆的完整内容，同时更新 lastReadAt 时间戳 */
   read(filename: string): MemoryEntry | null {
     const filePath = path.join(this.memoryDir, filename);
     if (!fs.existsSync(filePath)) return null;
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = this.parseFrontmatter(raw);
     if (!parsed) return null;
+
+    // 更新 lastReadAt
+    const now = Date.now();
+    const updatedFrontmatter = [
+      "---",
+      `name: ${parsed.meta.name ?? filename.replace(/\.md$/, "")}`,
+      `description: ${parsed.meta.description ?? ""}`,
+      `type: ${parsed.meta.type ?? "reference"}`,
+      `lastWriteAt: ${parsed.meta.lastWriteAt ?? now}`,
+      `lastReadAt: ${now}`,
+      "---",
+      "",
+      parsed.body,
+    ].join("\n");
+    fs.writeFileSync(filePath, updatedFrontmatter, "utf-8");
+
     return {
       name: parsed.meta.name ?? filename.replace(/\.md$/, ""),
       description: parsed.meta.description ?? "",
       type: (parsed.meta.type as MemoryEntry["type"]) ?? "reference",
       content: parsed.body,
       filePath: filename,
+      lastWriteAt: parsed.meta.lastWriteAt ? Number(parsed.meta.lastWriteAt) : undefined,
+      lastReadAt: now,
     };
   }
 
@@ -195,7 +230,11 @@ export class MemoryStore {
       body = body.slice(body.length - MAX_INDEX_LINES);
     }
 
-    fs.writeFileSync(this.indexPath, [header, "", ...body, ""].join("\n"), "utf-8");
+    fs.writeFileSync(
+      this.indexPath,
+      [header, "", ...body, ""].join("\n"),
+      "utf-8",
+    );
   }
 
   /** 全量重建索引（删除文件后调用） */

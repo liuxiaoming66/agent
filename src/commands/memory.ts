@@ -1,5 +1,6 @@
 import type { CommandHandler } from "./index.js";
 import type { MemoryEntry } from "../memory/store.js";
+import { lintAll, type ValidationIssue } from "../memory/validator.js";
 
 /**
  * /memory              — 列出所有记忆
@@ -75,6 +76,41 @@ const memoryCommand: CommandHandler = (cmd, ctx) => {
     return "async";
   }
 
+  // /memory lint
+  if (subCmd === "lint" || subCmd.startsWith("lint")) {
+    const entries: MemoryEntry[] = ctx.memoryStore.list();
+    if (entries.length === 0) {
+      console.log("[Memory] 记忆库为空，无需体检");
+    } else {
+      const issues: ValidationIssue[] = lintAll(entries, ".");
+      if (issues.length === 0) {
+        console.log(`\n=== 记忆体检通过 ✓ ===`);
+        console.log(`共 ${entries.length} 条记忆，无问题。`);
+      } else {
+        console.log(`\n=== 记忆体检报告（共 ${issues.length} 个问题） ===`);
+        const groups: Record<string, ValidationIssue[]> = {
+          stale_path: issues.filter((i) => i.kind === "stale_path"),
+          never_used: issues.filter((i) => i.kind === "never_used"),
+          duplicate_name: issues.filter((i) => i.kind === "duplicate_name"),
+        };
+        if (groups.stale_path.length > 0) {
+          console.log(`\n[路径失效] ${groups.stale_path.length} 条:`);
+          for (const i of groups.stale_path) console.log(`  - ${i.filePath}: ${i.message}`);
+        }
+        if (groups.never_used.length > 0) {
+          console.log(`\n[过期未读] ${groups.never_used.length} 条:`);
+          for (const i of groups.never_used) console.log(`  - ${i.filePath}: ${i.message}`);
+        }
+        if (groups.duplicate_name.length > 0) {
+          console.log(`\n[重名冲突] ${groups.duplicate_name.length} 条:`);
+          for (const i of groups.duplicate_name) console.log(`  - ${i.message}`);
+        }
+      }
+    }
+    ctx.ask();
+    return "async";
+  }
+
   // /memory — 默认列出所有记忆
   const entries: MemoryEntry[] = ctx.memoryStore.list();
   if (entries.length === 0) {
@@ -84,7 +120,7 @@ const memoryCommand: CommandHandler = (cmd, ctx) => {
     for (const e of entries) {
       console.log(`  [${e.type}] ${e.name} — ${e.description} (${e.filePath})`);
     }
-    console.log(`\n提示: /memory read <文件名> 查看详情 | /memory search <关键词> 搜索`);
+    console.log(`\n提示: /memory read <文件名> 查看详情 | /memory search <关键词> 搜索 | /memory lint 体检`);
   }
   ctx.ask();
   return "async";

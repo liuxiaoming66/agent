@@ -236,6 +236,42 @@ function ask() {
       return;
     }
 
+    // /dream — 记忆自动整理（定位→检测→整理→报告）
+    if (trimmed === "/dream" || trimmed === "dream") {
+      console.log("\n[dream] 开始记忆整理...");
+      const dreamPrompt = [
+        "请对记忆库做一次完整的整理（dream），按以下阶段执行：",
+        "",
+        "**阶段 1：定位** — 用 memory lint 扫描全库（结果已包含内容预览和问题清单，不需要逐条 read）。",
+        "**阶段 2：整理** — 根据 lint 报告直接操作：",
+        "  - 路径过期且长期未用的，直接 memory delete（传 filename）删掉",
+        "  - 同名重复的，用 memory save 保存合并后的版本（同名自动覆盖），再 delete 多余的",
+        "  - 内容仍然有效但描述不准确的，用 memory save 覆盖更新",
+        "**阶段 3：报告** — 用一段文字总结这次整理做了什么。",
+        "",
+        "注意：read 和 delete 都需要传 filename（如 project_deploy-process.md），不是 name。",
+      ].join("\n");
+
+      const userMsg: ModelMessage = { role: "user", content: dreamPrompt };
+      messages.push(userMsg);
+      timestamps.set(messages.length - 1, Date.now());
+      store.append(userMsg);
+
+      await runDefensePipeline();
+      SYSTEM = builder.build(makePromptCtx());
+      await agentLoop(
+        model,
+        registry,
+        messages,
+        SYSTEM,
+        { used: 0, limit: 10000, inputTokens: 0, outputTokens: 0 },
+        tracker,
+      );
+      console.log("  [dream 完成]\n");
+      ask();
+      return;
+    }
+
     // 构建命令上下文，交给 dispatcher 处理
     const cmdCtx: CommandContext = {
       messages,

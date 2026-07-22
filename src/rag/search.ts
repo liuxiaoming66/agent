@@ -26,13 +26,14 @@ export async function hybridSearch(
     .sort((a: SearchResult, b: SearchResult) => b.score - a.score)
     .slice(0, candidateCount);
 
-  // 路径 2: 关键词搜索 (BM25)
+  // 路径 2: 关键词搜索 (BM25 倒排索引)
   const queryTerms = tokenize(query);
   const allTexts = all.map((e) => e.chunk.text);
+  const bm25Index = buildBM25Index(allTexts);
   const keywordResults = all
     .map((entry: VectorEntry, i: number) => ({
       chunk: entry.chunk,
-      score: bm25Score(queryTerms, entry.chunk.text, allTexts),
+      score: bm25ScoreWithIndex(queryTerms, i, bm25Index),
     }))
     .sort((a: SearchResult, b: SearchResult) => b.score - a.score)
     .slice(0, candidateCount);
@@ -74,20 +75,59 @@ function tokenize(text: string): string[] {
     .filter((t) => t.length > 0);
 }
 
-/** 简化 BM25 评分 */
-function bm25Score(queryTerms: string[], docText: string, allDocs: string[]): number {
+/** 预计算的 BM25 索引结构 */
+interface BM25Index {
+  /** 每篇文档的词频表: docIdx → Map<term, count> */
+  docTermFreqs: Map<string, number>[];
+  /** 倒排索引: term → 包含该词的文档下标集合 */
+  invertedIndex: Map<string, Set<number>>;
+  /** 每篇文档的 token 数 */
+  docLengths: number[];
+  /** 平均文档长度 */
+  avgDocLen: number;
+  /** 文档总数 */
+  N: number;
+}
+
+/** 构建 BM25 索引（每次搜索前调用一次，避免重复 tokenize） */
+function buildBM25Index(allDocs: string[]): BM25Index {
+  const N = allDocs.length;
+  const docTermFreqs: Map<string, number>[] = [];
+  const invertedIndex = new Map<string, Set<number>>();
+  const docLengths: number[] = [];
+
+  for (let i = 0; i < N; i++) {
+    const terms = tokenize(allDocs[i]);
+    docLengths.push(terms.length);
+    const freqMap = new Map<string, number>();
+    for (const t of terms) {
+      freqMap.set(t, (freqMap.get(t) ?? 0) + 1);
+    }
+    docTermFreqs.push(freqMap);
+    // 构建倒排索引（每个词只记一次文档出现）
+    for (const t of freqMap.keys()) {
+      if (!invertedIndex.has(t)) invertedIndex.set(t, new Set());
+      invertedIndex.get(t)!.add(i);
+    }
+  }
+
+  const avgDocLen = docLengths.reduce((s, l) => s + l, 0) / (N || 1);
+  return { docTermFreqs, invertedIndex, docLengths, avgDocLen, N };
+}
+
+/** BM25 评分（基于预计算索引，O(queryTerms) 复杂度） */
+function bm25ScoreWithIndex(queryTerms: string[], docIdx: number, index: BM25Index): number {
   const k1 = 1.5;
   const b = 0.75;
-  const docTerms = tokenize(docText);
-  const docLen = docTerms.length;
-  const avgDocLen = allDocs.reduce((s, d) => s + tokenize(d).length, 0) / (allDocs.length || 1);
-  const N = allDocs.length;
+  const { docTermFreqs, invertedIndex, docLengths, avgDocLen, N } = index;
+  const docLen = docLengths[docIdx];
+  const freqMap = docTermFreqs[docIdx];
 
   let score = 0;
   for (const term of queryTerms) {
-    const tf = docTerms.filter((t) => t === term).length;
+    const tf = freqMap.get(term) ?? 0;
     if (tf === 0) continue;
-    const df = allDocs.filter((d) => tokenize(d).includes(term)).length;
+    const df = invertedIndex.get(term)?.size ?? 0;
     const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
     score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLen / avgDocLen))));
   }
