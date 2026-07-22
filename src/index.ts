@@ -4,7 +4,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
-import type { ToolDefinition } from "./tools/index.js";
+import { createToolSearchTool } from "./tools/tool-search.js";
 import { agentLoop } from "./agent/loop.js";
 import { UsageTracker } from "./usage/tracker.js";
 import { SessionStore } from "./session/store";
@@ -23,7 +23,10 @@ import {
   CONTEXT_TOKEN_THRESHOLD,
 } from "./context/compressor";
 import { applyDefense } from "./context/defense";
-import { buildContextSnapshot, renderContextMatrix } from "./context/view";
+import { createDispatcher, type CommandContext } from "./commands/index.js";
+import { debugCommands } from "./commands/debug.js";
+import { contextCommands } from "./commands/context.js";
+import { memoryCommands } from "./commands/memory.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -75,36 +78,7 @@ async function connectMCP() {
   }
 }
 
-const toolSearchTool: ToolDefinition = {
-  name: "tool_search",
-  description:
-    "获取延迟工具的完整定义。传入工具名（从系统提示的延迟工具列表中选取），返回该工具的完整参数 Schema",
-  parameters: {
-    type: "object",
-    properties: {
-      query: {
-        type: "string",
-        description:
-          '工具名，如 "mcp__github__list_issues"。支持逗号分隔多个工具名',
-      },
-    },
-    required: ["query"],
-    additionalProperties: false,
-  },
-  isConcurrencySafe: true,
-  isReadOnly: true,
-  execute: async ({ query }: { query: string }) => {
-    const results = registry.searchTools(query);
-    if (results.length === 0) return `没有找到匹配 "${query}" 的工具`;
-    return results.map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters,
-    }));
-  },
-};
-
-registry.register(toolSearchTool);
+registry.register(createToolSearchTool(registry));
 
 const model = (
   process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-plus") : createMockModel()
@@ -113,6 +87,23 @@ const model = (
 const isContinue = process.argv.includes("--continue");
 const store = new SessionStore("default");
 const tracker = new UsageTracker();
+
+/** 每轮对话可重建的 PromptContext 工厂 */
+function makePromptCtx(): PromptContext {
+  return {
+    toolCount: registry.getActiveTools().length,
+    deferredToolSummary: registry.getDeferredToolSummary(),
+    sessionMessageCount: messages.length,
+    sessionId: "default",
+  };
+}
+
+// 命令 dispatcher：责任链模式，第一个匹配的 handler 接管
+const dispatch = createDispatcher([
+  ...debugCommands,
+  ...contextCommands,
+  ...memoryCommands,
+]);
 
 let messages: ModelMessage[] = [];
 let summary = "";
@@ -215,17 +206,20 @@ function ask() {
       return;
     }
 
-    // /context 命令：打印上下文占用看板，不进入模型调用
-    if (trimmed === "/context") {
-      const snapshot = buildContextSnapshot({
-        system: SYSTEM,
-        toolsTokens: registry.countTokenEstimate().active,
-        messages,
-      });
-      console.log(renderContextMatrix(snapshot));
-      ask();
-      return;
-    }
+    // 构建命令上下文，交给 dispatcher 处理
+    const cmdCtx: CommandContext = {
+      messages,
+      timestamps,
+      registry,
+      builder,
+      tracker,
+      sessionStore: store,
+      model,
+      makePromptCtx,
+      ask,
+    };
+    const handled = dispatch(trimmed, cmdCtx);
+    if (handled) return; // 命令已处理（同步或异步）
 
     const prevLen = messages.length;
     messages.push({ role: "user", content: trimmed });
@@ -233,6 +227,9 @@ function ask() {
 
     // 每轮对话前执行统一防御管线（从轻到重）
     await runDefensePipeline();
+
+    // 每轮重建 system prompt（记忆等动态内容可能变化）
+    SYSTEM = builder.build(makePromptCtx());
 
     await agentLoop(
       model,
@@ -263,14 +260,8 @@ async function main() {
   const activeTools = registry.getActiveTools();
   const estimate = registry.countTokenEstimate();
 
-  const promptCtx: PromptContext = {
-    toolCount: registry.getActiveTools().length,
-    deferredToolSummary: registry.getDeferredToolSummary(),
-    sessionMessageCount: messages.length,
-    sessionId: "default",
-  };
-  SYSTEM = builder.build(promptCtx);
-  builder.debug(promptCtx); // 显示各模块状态
+  SYSTEM = builder.build(makePromptCtx());
+  builder.debug(makePromptCtx()); // 显示各模块状态
 
   console.log(`\n=== 工具统计 ===`);
   console.log(`  全部工具: ${allCount} 个`);
