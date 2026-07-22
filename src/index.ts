@@ -7,6 +7,13 @@ import { allTools, ToolRegistry, MCPClient } from "./tools/index.js";
 import { createToolSearchTool } from "./tools/tool-search.js";
 import { createMemoryTool } from "./tools/memory-tools.js";
 import { MemoryStore } from "./memory/store.js";
+import { SqliteVectorStore } from "./rag/sqlite-store.js";
+import {
+  createMockEmbedder,
+  createDashScopeEmbedder,
+  type EmbeddingFn,
+} from "./rag/embedding.js";
+import { createRagTools } from "./tools/rag-tools.js";
 import { agentLoop } from "./agent/loop.js";
 import { UsageTracker } from "./usage/tracker.js";
 import { SessionStore } from "./session/store";
@@ -15,6 +22,7 @@ import {
   deferredTools,
   memoryContext,
   PromptBuilder,
+  ragContext,
   sessionContext,
   toolGuide,
   type PromptContext,
@@ -36,7 +44,14 @@ const builder = new PromptBuilder()
   .pipe("toolGuide", toolGuide())
   .pipe("deferredTools", deferredTools())
   .pipe("sessionContext", sessionContext())
-  .pipe("memoryContext", memoryContext(() => memoryStore.buildPromptSection()));
+  .pipe(
+    "memoryContext",
+    memoryContext(() => memoryStore.buildPromptSection()),
+  )
+  .pipe(
+    "ragContext",
+    ragContext(() => vectorStore),
+  );
 
 let SYSTEM = "";
 
@@ -88,8 +103,15 @@ const memoryStore = new MemoryStore();
 memoryStore.init();
 registry.register(createMemoryTool(memoryStore));
 
+// RAG 知识库（SQLite 持久化）
+const vectorStore = new SqliteVectorStore();
+const embedFn: EmbeddingFn = process.env.DASHSCOPE_API_KEY
+  ? createDashScopeEmbedder(process.env.DASHSCOPE_API_KEY)
+  : createMockEmbedder();
+registry.register(...createRagTools(vectorStore, embedFn));
+
 const model = (
-  process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-plus") : createMockModel()
+  process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-max") : createMockModel()
 ) as LanguageModel;
 
 const isContinue = process.argv.includes("--continue");

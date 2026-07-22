@@ -1,3 +1,5 @@
+import type { SqliteVectorStore } from "../rag/sqlite-store.js";
+
 export interface PromptContext {
   toolCount: number;
   deferredToolSummary: string;
@@ -73,5 +75,15 @@ export function memoryContext(getMemorySection: () => string): PipeFn {
     const section = getMemorySection();
     if (!section) return null;
     return section;
+  };
+}
+
+export function ragContext(getStore: () => SqliteVectorStore): (ctx: PromptContext) => string | null {
+  return () => {
+    const store = getStore();
+    const size = store.size();
+    if (size === 0) return null;
+    const sources = store.sources();
+    return `[知识库] 已导入 ${size} 个文档片段（来源: ${sources.join(', ')}）。使用 rag_search 工具搜索知识库。`;
   };
 }
