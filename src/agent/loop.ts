@@ -132,7 +132,7 @@ export async function agentLoop(
     budget.used += inp + out;
     const pct = Math.round((budget.used / budget.limit) * 100);
     console.log(
-      `  [Token] 输入: ${budget.inputTokens} | 输出: ${budget.outputTokens} | 总计: ${budget.used}/${budget.limit} (${pct}%)`,
+      `  [Token] 输入: ${budget.inputTokens} | 输出: ${budget.outputTokens} | 总计: ${budget.used}`,
     );
 
     // 用量统计：归一化后记入 tracker，每步明确标注缓存命中情况

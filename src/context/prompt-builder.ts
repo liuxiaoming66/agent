@@ -87,3 +87,11 @@ export function ragContext(getStore: () => SqliteVectorStore): (ctx: PromptConte
     return `[知识库] 已导入 ${size} 个文档片段（来源: ${sources.join(', ')}）。使用 rag_search 工具搜索知识库。`;
   };
 }
+
+/**
+ * Skill 上下文 pipe：把已激活 skill 的 SOP 内容与可用 skill 列表注入 system prompt。
+ * 与 memory / RAG 相同套路——每轮对话前动态构建，激活状态变化即时生效。
+ */
+export function skillContext(getSection: () => string | null): PipeFn {
+  return () => getSection();
+}

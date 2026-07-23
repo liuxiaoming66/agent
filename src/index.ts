@@ -24,6 +24,7 @@ import {
   PromptBuilder,
   ragContext,
   sessionContext,
+  skillContext,
   toolGuide,
   type PromptContext,
 } from "./context/prompt-builder";
@@ -38,6 +39,9 @@ import { createDispatcher, type CommandContext } from "./commands/index.js";
 import { debugCommands } from "./commands/debug.js";
 import { contextCommands } from "./commands/context.js";
 import { memoryCommands } from "./commands/memory.js";
+import { skillCommands } from "./commands/skill.js";
+import { SkillLoader } from "./skills/loader.js";
+import { createSkillTool } from "./tools/skill-tools.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -51,6 +55,10 @@ const builder = new PromptBuilder()
   .pipe(
     "ragContext",
     ragContext(() => vectorStore),
+  )
+  .pipe(
+    "skillContext",
+    skillContext(() => skillLoader.buildPromptSection(activeSkills)),
   );
 
 let SYSTEM = "";
@@ -110,6 +118,12 @@ const embedFn: EmbeddingFn = process.env.DASHSCOPE_API_KEY
   : createMockEmbedder();
 registry.register(...createRagTools(vectorStore, embedFn));
 
+// Skills（.skills/<name>/SKILL.md）：动态注入 SOP 到 system prompt
+const skillLoader = new SkillLoader(".");
+const loadedSkills = skillLoader.load();
+const activeSkills = new Set<string>();
+registry.register(createSkillTool(skillLoader, activeSkills));
+
 const model = (
   process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-max") : createMockModel()
 ) as LanguageModel;
@@ -133,6 +147,7 @@ const dispatch = createDispatcher([
   ...debugCommands,
   ...contextCommands,
   ...memoryCommands,
+  ...skillCommands,
 ]);
 
 let messages: ModelMessage[] = [];
@@ -198,6 +213,28 @@ async function runDefensePipeline() {
       `[Layer 5: Summarization] 压缩了 ${compResult.compressedCount} 条消息`,
     );
   }
+}
+
+/**
+ * 注入一条 user message 并跑完整一轮 Agent（供 skill 快捷方式等复用）。
+ * 与普通对话同一套流程：防御管线 → 重建 SYSTEM → agentLoop → 持久化。
+ */
+async function runAgentTurn(userContent: string) {
+  const prevLen = messages.length;
+  messages.push({ role: "user", content: userContent });
+  timestamps.set(messages.length - 1, Date.now());
+
+  await runDefensePipeline();
+  SYSTEM = builder.build(makePromptCtx());
+  await agentLoop(
+    model,
+    registry,
+    messages,
+    SYSTEM,
+    { used: 0, limit: 10000, inputTokens: 0, outputTokens: 0 },
+    tracker,
+  );
+  store.appendAll(messages.slice(prevLen));
 }
 
 const rl = createInterface({
@@ -284,6 +321,9 @@ function ask() {
       makePromptCtx,
       ask,
       memoryStore,
+      skillLoader,
+      activeSkills,
+      runAgentTurn,
     };
     const handled = dispatch(trimmed, cmdCtx);
     if (handled) return; // 命令已处理（同步或异步）
@@ -337,6 +377,13 @@ async function main() {
   console.log(
     `  Token 估算: ~${estimate.active} (活跃) + ~${estimate.deferred} (延迟，不占 prompt)`,
   );
+  if (loadedSkills.length > 0) {
+    console.log(
+      `\n=== Skills ===\n  发现 ${loadedSkills.length} 个: ${loadedSkills
+        .map((s) => `/${s.name}`)
+        .join(", ")}\n  用 /skill 管理，或直接 /<name> 激活并执行`,
+    );
+  }
   for (const tool of registry.getAll()) {
     const flags = [
       tool.isConcurrencySafe ? "可并发" : "串行",
