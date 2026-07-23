@@ -40,8 +40,11 @@ import { debugCommands } from "./commands/debug.js";
 import { contextCommands } from "./commands/context.js";
 import { memoryCommands } from "./commands/memory.js";
 import { skillCommands } from "./commands/skill.js";
+import { pluginCommands } from "./commands/plugin.js";
 import { SkillLoader } from "./skills/loader.js";
 import { createSkillTool } from "./tools/skill-tools.js";
+import { PluginManager } from "./plugins/manager.js";
+import { supabasePlugin } from "./plugins/supabase-plugin.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -124,6 +127,10 @@ const loadedSkills = skillLoader.load();
 const activeSkills = new Set<string>();
 registry.register(createSkillTool(skillLoader, activeSkills));
 
+// 插件系统：核心只管推理循环与工具调度，具体能力通过 Plugin 动态加载
+const pluginManager = new PluginManager(registry);
+const builtinPlugins = [supabasePlugin];
+
 const model = (
   process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-max") : createMockModel()
 ) as LanguageModel;
@@ -147,6 +154,7 @@ const dispatch = createDispatcher([
   ...debugCommands,
   ...contextCommands,
   ...memoryCommands,
+  ...pluginCommands,
   ...skillCommands,
 ]);
 
@@ -244,10 +252,18 @@ const rl = createInterface({
 
 let exiting = false;
 
-function exitRepl() {
+async function exitRepl() {
   if (exiting) return;
   exiting = true;
   console.log("\nBye!");
+  // Graceful Shutdown：卸载所有插件（触发各自的 destroy 释放资源）
+  try {
+    await pluginManager.unloadAll();
+  } catch (err) {
+    console.error(
+      `[Plugin] 卸载出错: ${err instanceof Error ? err.message : err}`,
+    );
+  }
   rl.close();
   process.exit(0);
 }
@@ -323,6 +339,8 @@ function ask() {
       memoryStore,
       skillLoader,
       activeSkills,
+      pluginManager,
+      availablePlugins: builtinPlugins,
       runAgentTurn,
     };
     const handled = dispatch(trimmed, cmdCtx);
@@ -363,6 +381,21 @@ console.log('Super Agent v0.1 (type "exit", Esc, or Ctrl+C to quit)\n');
 
 async function main() {
   await connectMCP();
+
+  // 加载插件（在工具统计之前，以便计数包含插件注册的工具）
+  for (const plugin of builtinPlugins) {
+    try {
+      const tools = await pluginManager.load(plugin);
+      console.log(
+        `[Plugin] 已加载 ${plugin.name} v${plugin.version}，注册 ${tools.length} 个工具`,
+      );
+    } catch (err) {
+      console.log(
+        `[Plugin] ${plugin.name} 加载失败: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
   const allCount = registry.getAll().length;
   const activeTools = registry.getActiveTools();
   const estimate = registry.countTokenEstimate();
