@@ -4,6 +4,7 @@ import type {
   ChannelDefinition,
   IncomingMessage,
   OutgoingMessage,
+  StreamHandle,
 } from "./types.js";
 
 export interface DingTalkConfig {
@@ -12,6 +13,8 @@ export interface DingTalkConfig {
   /** ClientSecret（即 AppSecret） */
   clientSecret: string;
   port: number;
+  /** AI 流式卡片模板 ID（在钉钉开放平台 → 卡片模板中创建） */
+  cardTemplateId: string;
 }
 
 export class DingTalkChannel implements ChannelDefinition {
@@ -34,6 +37,7 @@ export class DingTalkChannel implements ChannelDefinition {
       clientId: config?.clientId || process.env.DINGTALK_CLIENT_ID || process.env.DINGTALK_APP_KEY || "",
       clientSecret: config?.clientSecret || process.env.DINGTALK_CLIENT_SECRET || process.env.DINGTALK_APP_SECRET || "",
       port: config?.port || Number(process.env.DINGTALK_PORT) || 9200,
+      cardTemplateId: config?.cardTemplateId || process.env.DINGTALK_CARD_TEMPLATE_ID || "",
     };
   }
 
@@ -123,6 +127,115 @@ export class DingTalkChannel implements ChannelDefinition {
     console.log("    [dingtalk] 已停止");
   }
 
+  /** 流式输出：创建 AI 卡片并逐步更新内容 */
+  async startStream(message: OutgoingMessage): Promise<StreamHandle | null> {
+    if (!this.config.clientId || !this.config.clientSecret) return null;
+
+    // 未配置卡片模板时回退到普通发送
+    if (!this.config.cardTemplateId) {
+      console.log("    [dingtalk] 未配置 DINGTALK_CARD_TEMPLATE_ID，回退普通消息");
+      return null;
+    }
+
+    try {
+      const token = await this.getAccessToken();
+      const outTrackId = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const userId = message.recipientId;
+
+      // 按官方文档格式：openSpaceId 使用小写 im_robot
+      const openSpaceId = `dtv1.card//im_robot.${userId}`;
+
+      // 创建并投放 AI 流式卡片（参照官方 createAndDeliver 接口）
+      const res = await fetch(
+        "https://api.dingtalk.com/v1.0/card/instances/createAndDeliver",
+        {
+          method: "POST",
+          headers: {
+            "x-acs-dingtalk-access-token": token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userId,
+            userIdType: 1,
+            cardTemplateId: this.config.cardTemplateId,
+            outTrackId,
+            callbackType: "STREAM",
+            cardData: {
+              cardParamMap: { content: "思考中..." },
+            },
+            openSpaceId,
+            imRobotOpenSpaceModel: {
+              supportForward: true,
+              lastMessageI18n: { ZH_CN: "AI 正在回复..." },
+            },
+            imRobotOpenDeliverModel: {
+              spaceType: "IM_ROBOT",
+              robotCode: this.config.clientId,
+            },
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`    [dingtalk] 创建流式卡片失败: ${res.status} ${errText}`);
+        return null;
+      }
+
+      console.log("    [dingtalk] 流式卡片已创建");
+
+      // 返回 StreamHandle，通过 streamingupdate API 逐步更新卡片
+      return {
+        update: async (accumulatedText: string) => {
+          // 中间更新失败不中断，静默忽略
+          try {
+            await this.updateStreamCard(token, outTrackId, accumulatedText, false);
+          } catch { /* 忽略中间更新失败 */ }
+        },
+        finish: async (finalText: string) => {
+          // 最终更新失败则抛出，触发 gateway 兜底发送普通消息
+          await this.updateStreamCard(token, outTrackId, finalText, true);
+        },
+      };
+    } catch (err) {
+      console.error(
+        `    [dingtalk] startStream 异常: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    }
+  }
+
+  /** 调用钉钉 streamingupdate API 更新卡片内容（失败时抛出异常） */
+  private async updateStreamCard(
+    token: string,
+    outTrackId: string,
+    content: string,
+    isFinalize: boolean,
+  ): Promise<void> {
+    const res = await fetch(
+      "https://api.dingtalk.com/v1.0/card/streaming",
+      {
+        method: "PUT",
+        headers: {
+          "x-acs-dingtalk-access-token": token,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          outTrackId,
+          guid: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+          key: "content",
+          content: isFinalize ? content : `${content}▌`,
+          isFull: true,
+          isFinalize,
+        }),
+      },
+    );
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`卡片更新失败: ${res.status} ${errText}`);
+    }
+  }
+
   async send(message: OutgoingMessage): Promise<void> {
     if (!this.config.clientId || !this.config.clientSecret) {
       console.log("    [dingtalk] 未配置钉钉，跳过发送");
@@ -141,9 +254,13 @@ export class DingTalkChannel implements ChannelDefinition {
             text: { content: message.text },
           }),
         });
-        if (res.ok) return;
+        // 无论返回什么状态码，webhook 调用过就不再走 OpenAPI，避免双发
+        if (res.ok) {
+          return;
+        }
+        console.log(`    [dingtalk] webhook 返回 ${res.status}，回退 OpenAPI`);
       } catch {
-        // webhook 过期，回退到 OpenAPI
+        console.log("    [dingtalk] webhook 网络异常，回退 OpenAPI");
       }
       this.sessionWebhooks.delete(message.channelId);
     }

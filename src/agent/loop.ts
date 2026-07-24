@@ -19,6 +19,11 @@ export interface BudgetState {
   outputTokens: number;
 }
 
+export interface AgentLoopOptions {
+  /** 每产生一段文本增量时回调（供流式通道使用） */
+  onTextDelta?: (delta: string, accumulated: string) => void;
+}
+
 export async function agentLoop(
   model: any,
   registry: ToolRegistry,
@@ -26,6 +31,7 @@ export async function agentLoop(
   system: string,
   budget: BudgetState,
   tracker?: UsageTracker,
+  opts?: AgentLoopOptions,
 ) {
   let step = 0;
   console.log('model',model)
@@ -62,6 +68,7 @@ export async function agentLoop(
             case "text-delta":
               process.stdout.write(part.text);
               fullText += part.text;
+              opts?.onTextDelta?.(part.text, fullText);
               break;
 
             case "tool-call": {

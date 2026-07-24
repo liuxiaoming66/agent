@@ -3,6 +3,7 @@ import type {
   ChannelDefinition,
   IncomingMessage,
   OutgoingMessage,
+  StreamHandle,
 } from "./types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { agentLoop, type BudgetState } from "../agent/loop.js";
@@ -88,6 +89,22 @@ export class ChannelGateway {
     }
     const budget = this.budgets.get(sessionKey)!;
 
+    // 尝试启动流式输出（通道支持则用卡片逐步更新，否则回退到一次性发送）
+    const channel = this.channels.get(channelName);
+    let stream: StreamHandle | null = null;
+    if (channel?.startStream) {
+      stream = await channel.startStream({
+        channelId: msg.channelId,
+        recipientId: msg.senderId,
+        text: "",
+      });
+    }
+
+    // 节流控制：每 300ms 最多刷新一次卡片
+    let lastFlush = 0;
+    let pendingText = "";
+    const FLUSH_INTERVAL = 300;
+
     await agentLoop(
       this.options.model,
       this.options.registry,
@@ -95,6 +112,18 @@ export class ChannelGateway {
       system,
       budget,
       this.options.tracker,
+      stream
+        ? {
+            onTextDelta: (_delta, accumulated) => {
+              pendingText = accumulated;
+              const now = Date.now();
+              if (now - lastFlush >= FLUSH_INTERVAL) {
+                lastFlush = now;
+                stream!.update(pendingText).catch(() => {});
+              }
+            },
+          }
+        : undefined,
     );
 
     // 从 messages 里取最后一条 assistant 消息作为回复
@@ -113,17 +142,30 @@ export class ChannelGateway {
     }
 
     if (replyText) {
-      const channel = this.channels.get(channelName);
-      if (channel) {
+      if (stream) {
+        // 流式通道：发送最终内容并结束，失败则回退普通发送
+        try {
+          await stream.finish(replyText);
+        } catch {
+          if (channel) {
+            await channel.send({
+              channelId: msg.channelId,
+              recipientId: msg.senderId,
+              text: replyText,
+            });
+          }
+        }
+      } else if (channel) {
+        // 普通通道：一次性发送
         await channel.send({
           channelId: msg.channelId,
           recipientId: msg.senderId,
           text: replyText,
         });
-        console.log(
-          `  [${channelName}] → ${replyText.slice(0, 80)}${replyText.length > 80 ? "..." : ""}`,
-        );
       }
+      console.log(
+        `  [${channelName}] → ${replyText.slice(0, 80)}${replyText.length > 80 ? "..." : ""}`,
+      );
     }
   }
 
