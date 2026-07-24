@@ -1,17 +1,22 @@
 import type { ToolRegistry, ToolDefinition } from '../tools/registry.js';
+import type { ChannelDefinition } from '../channels/types.js';
+import type { ChannelGateway } from '../channels/gateway.js';
 import type { PluginDefinition, PluginConfig, PluginApi } from './types.js';
 
 interface LoadedPlugin {
   definition: PluginDefinition;
   tools: string[];
+  channels: string[];
 }
 
 export class PluginManager {
   private plugins = new Map<string, LoadedPlugin>();
   private registry: ToolRegistry;
+  private gateway?: ChannelGateway;
 
-  constructor(registry: ToolRegistry) {
+  constructor(registry: ToolRegistry, gateway?: ChannelGateway) {
     this.registry = registry;
+    this.gateway = gateway;
   }
 
   async load(definition: PluginDefinition, config?: PluginConfig): Promise<string[]> {
@@ -25,6 +30,7 @@ export class PluginManager {
     });
 
     const registeredTools: string[] = [];
+    const registeredChannels: string[] = [];
 
     const api: PluginApi = {
       registerTools: (tools: ToolDefinition[]) => {
@@ -38,6 +44,14 @@ export class PluginManager {
           this.registry.register(prefixedTool);
           registeredTools.push(prefixedName);
         }
+      },
+      registerChannel: (channel: ChannelDefinition) => {
+        if (!this.gateway) {
+          console.warn(`  [plugin:${definition.name}] 无 ChannelGateway，通道 "${channel.name}" 未注册`);
+          return;
+        }
+        this.gateway.register(channel);
+        registeredChannels.push(channel.name);
       },
       getConfig: () => resolvedConfig,
       log: (message: string) => {
@@ -56,6 +70,7 @@ export class PluginManager {
     this.plugins.set(definition.name, {
       definition,
       tools: registeredTools,
+      channels: registeredChannels,
     });
 
     return registeredTools;
@@ -76,6 +91,13 @@ export class PluginManager {
 
     for (const toolName of plugin.tools) {
       this.registry.unregister(toolName);
+    }
+
+    // 停止并移除插件注册的通道
+    if (this.gateway && plugin.channels.length > 0) {
+      for (const chName of plugin.channels) {
+        await this.gateway.unregister(chName);
+      }
     }
 
     this.plugins.delete(name);

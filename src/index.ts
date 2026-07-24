@@ -45,6 +45,8 @@ import { SkillLoader } from "./skills/loader.js";
 import { createSkillTool } from "./tools/skill-tools.js";
 import { PluginManager } from "./plugins/manager.js";
 import { supabasePlugin } from "./plugins/supabase-plugin.js";
+import { ChannelGateway, createAllChannels } from "./channels/index.js";
+import { createChannelCommands } from "./commands/channel.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -127,10 +129,6 @@ const loadedSkills = skillLoader.load();
 const activeSkills = new Set<string>();
 registry.register(createSkillTool(skillLoader, activeSkills));
 
-// 插件系统：核心只管推理循环与工具调度，具体能力通过 Plugin 动态加载
-const pluginManager = new PluginManager(registry);
-const builtinPlugins = [supabasePlugin];
-
 const model = (
   process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-max") : createMockModel()
 ) as LanguageModel;
@@ -138,6 +136,21 @@ const model = (
 const isContinue = process.argv.includes("--continue");
 const store = new SessionStore("default");
 const tracker = new UsageTracker();
+
+// Channels 通道网关：接收外部消息 → Agent 处理 → 回复
+const gateway = new ChannelGateway({
+  model,
+  registry,
+  buildSystem: () => builder.build(makePromptCtx()),
+  tracker,
+});
+for (const ch of createAllChannels()) {
+  gateway.register(ch);
+}
+
+// 插件系统：核心只管推理循环与工具调度，具体能力通过 Plugin 动态加载
+const pluginManager = new PluginManager(registry, gateway);
+const builtinPlugins = [supabasePlugin];
 
 /** 每轮对话可重建的 PromptContext 工厂 */
 function makePromptCtx(): PromptContext {
@@ -156,6 +169,7 @@ const dispatch = createDispatcher([
   ...memoryCommands,
   ...pluginCommands,
   ...skillCommands,
+  ...createChannelCommands(gateway),
 ]);
 
 let messages: ModelMessage[] = [];
@@ -256,6 +270,14 @@ async function exitRepl() {
   if (exiting) return;
   exiting = true;
   console.log("\nBye!");
+  // Graceful Shutdown：停止所有通道
+  try {
+    await gateway.stopAll();
+  } catch (err) {
+    console.error(
+      `[Gateway] 停止出错: ${err instanceof Error ? err.message : err}`,
+    );
+  }
   // Graceful Shutdown：卸载所有插件（触发各自的 destroy 释放资源）
   try {
     await pluginManager.unloadAll();
@@ -426,6 +448,13 @@ async function main() {
   // 启动时防御：处理恢复的历史消息
   if (messages.length > 0) {
     await runDefensePipeline();
+  }
+
+  // 启动已注册的通道
+  const channelList = gateway.list();
+  if (channelList.length > 0) {
+    console.log(`\n=== Channels ===`);
+    await gateway.startAll();
   }
 
   ask();
