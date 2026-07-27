@@ -51,6 +51,7 @@ import { HookPipeline } from "./security/hooks.js";
 import { createSecurityCommands } from "./commands/security.js";
 import { CronService } from "./cron/service.js";
 import { createCronTool } from "./tools/cron-tools.js";
+import { createCronCommands } from "./commands/cron.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -247,6 +248,7 @@ const dispatch = createDispatcher([
   ...skillCommands,
   ...createChannelCommands(gateway),
   ...createSecurityCommands(registry, hookPipeline),
+  ...createCronCommands(cronService),
 ]);
 
 // 将命令 dispatcher 注入 gateway，使钉钉/飞书等通道也能拦截 / 命令
