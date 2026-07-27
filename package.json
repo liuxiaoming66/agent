@@ -19,6 +19,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ai": "^7.0.30",
     "better-sqlite3": "^13.0.1",
+    "croner": "^10.0.1",
     "dingtalk-stream": "2.1.6-beta.1",
     "dotenv": "^17.4.2",
     "hono": "^4.12.31",

@@ -5,3 +5,4 @@ node_modules/
 .rag/
 .qoder/
 .skills/
+.cron/

@@ -49,6 +49,8 @@ import { ChannelGateway, createAllChannels } from "./channels/index.js";
 import { createChannelCommands } from "./commands/channel.js";
 import { HookPipeline } from "./security/hooks.js";
 import { createSecurityCommands } from "./commands/security.js";
+import { CronService } from "./cron/service.js";
+import { createCronTool } from "./tools/cron-tools.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -179,6 +181,8 @@ for (const ch of createAllChannels()) {
 const pluginManager = new PluginManager(registry, gateway);
 const builtinPlugins = [supabasePlugin];
 
+const cronService = new CronService(".");
+
 /** 每轮对话可重建的 PromptContext 工厂 */
 function makePromptCtx(): PromptContext {
   return {
@@ -188,6 +192,51 @@ function makePromptCtx(): PromptContext {
     sessionId: "default",
   };
 }
+
+function extractAssistantText(msgs: ModelMessage[]): string {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.role !== "assistant") continue;
+    if (typeof m.content === "string") return m.content;
+    if (Array.isArray(m.content)) {
+      return m.content
+        .filter(
+          (p): p is { type: "text"; text: string } =>
+            typeof p === "object" &&
+            p !== null &&
+            "type" in p &&
+            p.type === "text",
+        )
+        .map((p) => p.text)
+        .join("");
+    }
+  }
+  return "(无输出)";
+}
+
+cronService.setExecutor({
+  runAgentPrompt: async (prompt, timeout = 60000) => {
+    const cronMessages: ModelMessage[] = [{ role: "user", content: prompt }];
+    const system = builder.build(makePromptCtx());
+    const run = agentLoop(
+      model,
+      registry,
+      cronMessages,
+      system,
+      { used: 0, limit: 10000, inputTokens: 0, outputTokens: 0 },
+      tracker,
+    );
+    await Promise.race([
+      run,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), timeout),
+      ),
+    ]);
+    return extractAssistantText(cronMessages);
+  },
+  notify: (message) => console.log(message),
+});
+registry.register(createCronTool(cronService));
 
 // 命令 dispatcher：责任链模式，第一个匹配的 handler 接管
 const dispatch = createDispatcher([
@@ -333,6 +382,14 @@ async function exitRepl() {
   } catch (err) {
     console.error(
       `[Plugin] 卸载出错: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+  // Graceful Shutdown：停止所有定时任务
+  try {
+    cronService.stop();
+  } catch (err) {
+    console.error(
+      `[Cron] 停止出错: ${err instanceof Error ? err.message : err}`,
     );
   }
   rl.close();
@@ -504,6 +561,17 @@ async function main() {
   if (channelList.length > 0) {
     console.log(`\n=== Channels ===`);
     await gateway.startAll();
+  }
+
+  cronService.load();
+  cronService.start();
+  const cronJobs = cronService.list();
+  if (cronJobs.length > 0) {
+    console.log(`\n=== Cron ===`);
+    console.log(`  已加载 ${cronJobs.length} 个定时任务`);
+    for (const job of cronJobs) {
+      console.log(`  [${job.status}] ${job.config.id} — ${job.config.name}`);
+    }
   }
 
   ask();
