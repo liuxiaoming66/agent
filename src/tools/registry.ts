@@ -1,6 +1,9 @@
 import { jsonSchema } from "ai";
 import { MCPClient } from "./mcp-client.js";
 import { estimateTextTokens } from "../context/compressor.js";
+import { canUseTool, type Role } from "../security/roles.js";
+import { classifyBashCommand } from "../commands/bash-classifier.js";
+import { HookPipeline } from "../security/hooks.js";
 
 export interface ToolDefinition {
   name: string;
@@ -19,11 +22,21 @@ const DEFAULT_MAX_RESULT_CHARS = 3000;
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
   private discoveredTools = new Set<string>();
+  private currentRole: Role = "owner";
 
   // 三个状态变量构成一把读写锁
   private exclusiveLock = false; // 当前是否有独占锁持有者
   private concurrentCount = 0; // 当前共享锁持有数
   private waitQueue: Array<() => void> = []; // 阻塞等待中的 resolve 函数
+  hookPipeline: HookPipeline | undefined;
+
+  setRole(role: Role): void {
+    this.currentRole = role;
+  }
+
+  getRole(): Role {
+    return this.currentRole;
+  }
 
   register(...tools: ToolDefinition[]): void {
     for (const tool of tools) {
@@ -42,6 +55,10 @@ export class ToolRegistry {
 
   getAll(): ToolDefinition[] {
     return Array.from(this.tools.values());
+  }
+
+  setHookPipeline(pipeline: HookPipeline): void {
+    this.hookPipeline = pipeline;
   }
 
   // 获取共享锁：只要没人独占就能拿，多个只读工具可以同时持有
@@ -87,6 +104,16 @@ export class ToolRegistry {
         description: tool.description,
         inputSchema: jsonSchema(tool.parameters as any),
         execute: async (input: any) => {
+          // 在 execute 函数里，实际调用前：
+          if (name === "bash" && input?.command) {
+            const risk = classifyBashCommand(input.command);
+            if (risk.level === "dangerous") {
+              return `[拒绝执行] 检测到危险操作: ${risk.reason}\n命令: ${input.command}`;
+            }
+            if (risk.level === "moderate") {
+              console.log(`  [安全] ⚠ ${risk.reason}: ${input.command}`);
+            }
+          }
           // 在真正执行前先按 isConcurrencySafe 获取锁
           if (isSafe) {
             await registry.acquireConcurrent();
@@ -96,7 +123,30 @@ export class ToolRegistry {
             console.log(`  [串行] ${name} 获取独占锁，等待其他工具完成`);
           }
           try {
-            const raw = await executeFn(input);
+            if (registry.hookPipeline) {
+              const preResult = await registry.hookPipeline.runPre(name, input);
+              if (preResult.action === "block") {
+                return `[Hook 拦截] ${preResult.reason || "操作被阻止"}`;
+              }
+              if (
+                preResult.action === "modify" &&
+                preResult.modifiedInput !== undefined
+              ) {
+                input = preResult.modifiedInput;
+              }
+            }
+
+            let raw = await executeFn(input);
+            if (registry.hookPipeline) {
+              const postResult = await registry.hookPipeline.runPost(
+                name,
+                input,
+                raw,
+              );
+              if (postResult.modifiedOutput !== undefined) {
+                raw = postResult.modifiedOutput;
+              }
+            }
             const text =
               typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
             return truncateResult(text, maxChars);
@@ -118,6 +168,9 @@ export class ToolRegistry {
     return this.getAll().filter((tool) => {
       if (tool.shouldDefer && !this.discoveredTools.has(tool.name)) {
         return false;
+      }
+      if (!canUseTool(this.currentRole, tool.name)) {
+        return false; // ← 角色不允许的工具直接不暴露给模型
       }
       return true;
     });

@@ -31,6 +31,8 @@ export class DingTalkChannel implements ChannelDefinition {
   private sessionWebhooks = new Map<string, string>();
   /** 已处理的 messageId 集合，防止钉钉重投导致重复回复 */
   private processedIds = new Set<string>();
+  /** 时间窗口去重：senderId:text → 上次处理时间戳（5s 内相同内容视为重投） */
+  private recentMessages = new Map<string, number>();
 
   constructor(config?: Partial<DingTalkConfig>) {
     this.config = {
@@ -63,32 +65,52 @@ export class DingTalkChannel implements ChannelDefinition {
 
     this.streamClient
       .registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
-        // 立即返回 ACK，防止钉钉因超时重投消息
         const messageId = res.headers?.messageId || "";
 
-        // 去重：同一条消息只处理一次
+        // 一级去重：messageId 精确匹配（同一次投递）
         if (messageId && this.processedIds.has(messageId)) {
           return { status: "SUCCESS" };
         }
+
+        // 解析消息内容
+        let parsedData: any = null;
+        try {
+          parsedData = JSON.parse(res.data);
+        } catch {}
+        const text = (parsedData?.text?.content || "").trim();
+        const senderId = parsedData?.senderStaffId || parsedData?.senderId || "unknown";
+
+        // 二级去重：时间窗口内相同 sender+content 视为重投（兜底 messageId 变化的情况）
+        const contentKey = `${senderId}:${text}`;
+        const now = Date.now();
+        const lastTime = this.recentMessages.get(contentKey);
+        if (lastTime && now - lastTime < 5000) {
+          return { status: "SUCCESS" };
+        }
+        this.recentMessages.set(contentKey, now);
+
+        // 记录 messageId
         if (messageId) {
           this.processedIds.add(messageId);
-          // 防止集合无限增长，保留最近 500 条
           if (this.processedIds.size > 500) {
             const first = this.processedIds.values().next().value;
             if (first) this.processedIds.delete(first);
           }
         }
+        // 清理过期的时间窗口记录
+        if (this.recentMessages.size > 200) {
+          for (const [key, time] of this.recentMessages) {
+            if (now - time > 10000) this.recentMessages.delete(key);
+          }
+        }
 
         try {
-          const data = JSON.parse(res.data);
-          const text = (data.text?.content || "").trim();
-          const senderId = data.senderStaffId || data.senderId || "unknown";
-          const senderName = data.senderNick || senderId;
-          const conversationId = data.conversationId || "default";
+          const senderName = parsedData?.senderNick || senderId;
+          const conversationId = parsedData?.conversationId || "default";
 
           // 缓存 sessionWebhook（5 分钟有效，用于快速回复）
-          if (data.sessionWebhook) {
-            this.sessionWebhooks.set(conversationId, data.sessionWebhook);
+          if (parsedData?.sessionWebhook) {
+            this.sessionWebhooks.set(conversationId, parsedData.sessionWebhook);
           }
 
           if (text && this.messageHandler) {
@@ -97,7 +119,7 @@ export class DingTalkChannel implements ChannelDefinition {
               senderId,
               senderName,
               text,
-              raw: data,
+              raw: parsedData,
             });
           }
         } catch (err) {

@@ -47,6 +47,8 @@ import { PluginManager } from "./plugins/manager.js";
 import { supabasePlugin } from "./plugins/supabase-plugin.js";
 import { ChannelGateway, createAllChannels } from "./channels/index.js";
 import { createChannelCommands } from "./commands/channel.js";
+import { HookPipeline } from "./security/hooks.js";
+import { createSecurityCommands } from "./commands/security.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -112,6 +114,31 @@ async function connectMCP() {
 
 registry.register(createToolSearchTool(registry));
 
+// 安全管线：HookPipeline 实例 + 默认 Hook + 注入 registry
+const hookPipeline = new HookPipeline();
+
+// Pre-hook: 审计日志——记录每次工具调用
+hookPipeline.registerPre("audit-log", (toolName, input) => {
+  console.log(`  [audit] 调用 ${toolName}`);
+  return { action: "allow" };
+});
+
+// Post-hook: 敏感信息脱敏——将输出中的 API Key / Token 替换为占位符
+hookPipeline.registerPost("redact-secrets", (_toolName, _input, output) => {
+  if (typeof output === "string") {
+    const redacted = output.replace(
+      /\b(sk-|ghp_|gho_|xox[bpsa]-)[A-Za-z0-9_-]{8,}\b/g,
+      "[REDACTED]",
+    );
+    if (redacted !== output) {
+      return { action: "modify", modifiedOutput: redacted };
+    }
+  }
+  return { action: "allow" };
+});
+
+registry.setHookPipeline(hookPipeline);
+
 const memoryStore = new MemoryStore();
 memoryStore.init();
 registry.register(createMemoryTool(memoryStore));
@@ -170,7 +197,29 @@ const dispatch = createDispatcher([
   ...pluginCommands,
   ...skillCommands,
   ...createChannelCommands(gateway),
+  ...createSecurityCommands(registry, hookPipeline),
 ]);
+
+// 将命令 dispatcher 注入 gateway，使钉钉/飞书等通道也能拦截 / 命令
+gateway.setCommandDispatcher(
+  dispatch,
+  (sessionMessages: ModelMessage[]) => ({
+    messages: sessionMessages,
+    timestamps: new Map(),
+    registry,
+    builder,
+    tracker,
+    sessionStore: store,
+    model,
+    makePromptCtx,
+    ask: () => {},
+    memoryStore,
+    skillLoader,
+    activeSkills,
+    pluginManager,
+    availablePlugins: builtinPlugins,
+  }),
+);
 
 let messages: ModelMessage[] = [];
 let summary = "";

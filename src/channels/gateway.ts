@@ -21,6 +21,8 @@ export class ChannelGateway {
   private sessions = new Map<string, ModelMessage[]>();
   private budgets = new Map<string, BudgetState>();
   private options: GatewayOptions;
+  private dispatchFn?: (cmd: string, ctx: any) => boolean | "async";
+  private buildCmdCtx?: (messages: ModelMessage[]) => any;
 
   constructor(options: GatewayOptions) {
     this.options = options;
@@ -42,6 +44,15 @@ export class ChannelGateway {
     this.channels.delete(name);
     console.log(`  [gateway] ✗ ${name} 已移除`);
     return true;
+  }
+
+  /** 注入命令 dispatcher + 上下文工厂，使通道也能处理 / 命令 */
+  setCommandDispatcher(
+    dispatch: (cmd: string, ctx: any) => boolean | "async",
+    buildCmdCtx: (messages: ModelMessage[]) => any,
+  ): void {
+    this.dispatchFn = dispatch;
+    this.buildCmdCtx = buildCmdCtx;
   }
 
   async startAll(): Promise<void> {
@@ -74,6 +85,72 @@ export class ChannelGateway {
     }
     const messages = this.sessions.get(sessionKey)!;
 
+    const channel = this.channels.get(channelName);
+    let stream: StreamHandle | null = null;
+    if (channel?.startStream) {
+      stream = await channel.startStream({
+        channelId: msg.channelId,
+        recipientId: msg.senderId,
+        text: "",
+      });
+    }
+
+    // 拦截斜杠命令（/role, /hooks 等）：通道消息也走 dispatcher
+    if (
+      msg.text.startsWith("/") &&
+      this.dispatchFn &&
+      this.buildCmdCtx
+    ) {
+      const ctx = this.buildCmdCtx(messages);
+      ctx.ask = () => {}; // 通道无 REPL，ask 为空操作
+
+      // 捕获命令的 console.log 输出作为通道回复
+      const lines: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: any[]) => {
+        lines.push(
+          args
+            .map((a) => (typeof a === "string" ? a : String(a)))
+            .join(" "),
+        );
+        origLog(...args);
+      };
+
+      const handled = this.dispatchFn(msg.text, ctx);
+
+      console.log = origLog;
+
+      if (handled) {
+        const replyText = lines.join("\n").trim();
+        if (replyText) {
+          if (stream) {
+            try {
+              await stream.finish(replyText);
+            } catch {
+              if (channel) {
+                await channel.send({
+                  channelId: msg.channelId,
+                  recipientId: msg.senderId,
+                  text: replyText,
+                });
+              }
+            }
+          } else if (channel) {
+            await channel.send({
+              channelId: msg.channelId,
+              recipientId: msg.senderId,
+              text: replyText,
+        });
+          }
+          console.log(
+            `  [${channelName}] → ${replyText.slice(0, 80)}${replyText.length > 80 ? "..." : ""}`,
+          );
+        }
+        return; // 命令已处理，不进入 agentLoop
+      }
+      // 未匹配任何命令，继续走正常对话流程
+    }
+
     const userMsg: ModelMessage = { role: "user", content: msg.text };
     messages.push(userMsg);
 
@@ -88,17 +165,6 @@ export class ChannelGateway {
       });
     }
     const budget = this.budgets.get(sessionKey)!;
-
-    // 尝试启动流式输出（通道支持则用卡片逐步更新，否则回退到一次性发送）
-    const channel = this.channels.get(channelName);
-    let stream: StreamHandle | null = null;
-    if (channel?.startStream) {
-      stream = await channel.startStream({
-        channelId: msg.channelId,
-        recipientId: msg.senderId,
-        text: "",
-      });
-    }
 
     // 节流控制：每 300ms 最多刷新一次卡片
     let lastFlush = 0;
