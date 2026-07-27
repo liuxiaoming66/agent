@@ -52,6 +52,10 @@ import { createSecurityCommands } from "./commands/security.js";
 import { CronService } from "./cron/service.js";
 import { createCronTool } from "./tools/cron-tools.js";
 import { createCronCommands } from "./commands/cron.js";
+import { createAgentsCommands } from "./commands/agents.js";
+import { SubAgentRegistry } from "./agents/registry.js";
+import type { SpawnContext } from "./agents/spawn.js";
+import { createSpawnTool } from "./tools/spawn-tools.js";
 
 const builder = new PromptBuilder()
   .pipe("coreRules", coreRules())
@@ -160,7 +164,7 @@ const activeSkills = new Set<string>();
 registry.register(createSkillTool(skillLoader, activeSkills));
 
 const model = (
-  process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-max") : createMockModel()
+  process.env.DASHSCOPE_API_KEY ? qwen.chat("qwen3.7-flash") : createMockModel()
 ) as LanguageModel;
 
 const isContinue = process.argv.includes("--continue");
@@ -239,6 +243,20 @@ cronService.setExecutor({
 });
 registry.register(createCronTool(cronService));
 
+// 子 Agent 系统：spawn_agent 工具把任务派给独立上下文的子 Agent 执行（支持并行）
+const agentRegistry = new SubAgentRegistry();
+function makeSpawnCtx(): SpawnContext {
+  return {
+    model,
+    registry,
+    agentRegistry,
+    buildSystem: () => builder.build(makePromptCtx()),
+    currentDepth: 0, // 主 Agent 深度为 0；子 Agent 内排除了 spawn_agent，不会再嵌套
+    tracker, // 子 Agent 用量同步记入全局 tracker，避免计费黑盒
+  };
+}
+registry.register(createSpawnTool(agentRegistry, makeSpawnCtx));
+
 // 命令 dispatcher：责任链模式，第一个匹配的 handler 接管
 const dispatch = createDispatcher([
   ...debugCommands,
@@ -249,6 +267,7 @@ const dispatch = createDispatcher([
   ...createChannelCommands(gateway),
   ...createSecurityCommands(registry, hookPipeline),
   ...createCronCommands(cronService),
+  ...createAgentsCommands(agentRegistry),
 ]);
 
 // 将命令 dispatcher 注入 gateway，使钉钉/飞书等通道也能拦截 / 命令
@@ -498,7 +517,10 @@ function ask() {
         outputTokens: 0,
       },
       tracker,
-    );
+    ).catch((err) => {
+      // 兜底保险：agentLoop 内部已降级处理模型错误，这里捕获其余未预期异常，保住 REPL 不退出
+      console.log(`\n[Agent 异常] ${err instanceof Error ? err.message : err}`);
+    });
 
     // 本轮新增的消息（user + assistant + tool-call/result）追加持久化
     store.appendAll(messages.slice(prevLen));

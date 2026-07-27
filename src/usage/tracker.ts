@@ -13,11 +13,15 @@ export interface StepUsage {
   cacheWriteTokens: number;
 }
 
+/** 用量来源：主 Agent 循环 or 子 Agent */
+export type UsageSource = "main" | "subagent";
+
 /** 单条用量记录：时间戳 + 模型 + 成本 + token 明细 */
 export interface StepRecord extends StepUsage {
   ts: number;
   model: string;
   cost: number;
+  source: UsageSource;
 }
 
 export const PRICE_TABLE: Record<string, ModelPricing> = {
@@ -82,14 +86,14 @@ export function normalizeUsage(usage: any): StepUsage {
 export class UsageTracker {
   private steps: StepRecord[] = [];
 
-  record(model: string, usage: StepUsage): StepRecord {
+  record(model: string, usage: StepUsage, source: UsageSource = "main"): StepRecord {
     const cost = computeCost(model, usage);
-    const record = { ts: Date.now(), model, cost, ...usage };
+    const record = { ts: Date.now(), model, cost, source, ...usage };
     this.steps.push(record);
     return record;
   }
 
-  totals() {
+  totals(source?: UsageSource) {
     let inputTokens = 0,
       outputTokens = 0,
       cacheReadTokens = 0,
@@ -97,7 +101,8 @@ export class UsageTracker {
       cost = 0,
       baselineCost = 0;
 
-    for (const s of this.steps) {
+    const steps = source ? this.steps.filter((s) => s.source === source) : this.steps;
+    for (const s of steps) {
       inputTokens += s.inputTokens;
       outputTokens += s.outputTokens;
       cacheReadTokens += s.cacheReadTokens;

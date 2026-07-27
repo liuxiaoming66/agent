@@ -111,7 +111,16 @@ export async function agentLoop(
         stepUsage = await result.usage;
         break;
       } catch (error) {
-        if (attempt > MAX_RETRIES || !isRetryable(error as Error)) throw error;
+        const errMsg = error instanceof Error ? error.message : String(error);
+        // 重试耗尽或不可重试：降级为错误消息返回，不让异常打崩进程
+        if (attempt > MAX_RETRIES || !isRetryable(error as Error)) {
+          console.log(`\n[模型调用失败] ${errMsg}`);
+          messages.push({
+            role: "assistant",
+            content: `[系统] 本轮模型调用失败（${errMsg}），已重试 ${Math.min(attempt - 1, MAX_RETRIES)} 次。请稍后重试，或拆小任务减少单次请求压力。`,
+          });
+          return;
+        }
         const delay = calculateDelay(attempt);
         console.log(
           `  [重试] 第 ${attempt}/${MAX_RETRIES} 次失败，${delay}ms 后重试...`,

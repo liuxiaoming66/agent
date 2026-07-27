@@ -164,6 +164,62 @@ export class ToolRegistry {
     return result;
   }
 
+  // 无锁版本：供子 Agent 使用，绕过父 Agent 的读写锁避免死锁；excluded 用于排除 spawn_agent 等防递归
+  toAISDKFormatUnlocked(excluded?: Set<string>): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const tool of this.getActiveTools()) {
+      if (excluded?.has(tool.name)) continue;
+      const name = tool.name;
+      const maxChars = tool.maxResultChars;
+      const executeFn = tool.execute;
+      const registry = this;
+
+      result[name] = {
+        description: tool.description,
+        inputSchema: jsonSchema(tool.parameters as any),
+        execute: async (input: any) => {
+          if (name === "bash" && input?.command) {
+            const risk = classifyBashCommand(input.command);
+            if (risk.level === "dangerous") {
+              return `[拒绝执行] 检测到危险操作: ${risk.reason}\n命令: ${input.command}`;
+            }
+            if (risk.level === "moderate") {
+              console.log(`  [安全] ⚠ ${risk.reason}: ${input.command}`);
+            }
+          }
+          if (registry.hookPipeline) {
+            const preResult = await registry.hookPipeline.runPre(name, input);
+            if (preResult.action === "block") {
+              return `[Hook 拦截] ${preResult.reason || "操作被阻止"}`;
+            }
+            if (
+              preResult.action === "modify" &&
+              preResult.modifiedInput !== undefined
+            ) {
+              input = preResult.modifiedInput;
+            }
+          }
+
+          let raw = await executeFn(input);
+          if (registry.hookPipeline) {
+            const postResult = await registry.hookPipeline.runPost(
+              name,
+              input,
+              raw,
+            );
+            if (postResult.modifiedOutput !== undefined) {
+              raw = postResult.modifiedOutput;
+            }
+          }
+          const text =
+            typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+          return truncateResult(text, maxChars);
+        },
+      };
+    }
+    return result;
+  }
+
   getActiveTools(): ToolDefinition[] {
     return this.getAll().filter((tool) => {
       if (tool.shouldDefer && !this.discoveredTools.has(tool.name)) {
