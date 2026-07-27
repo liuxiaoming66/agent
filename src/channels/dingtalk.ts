@@ -80,11 +80,13 @@ export class DingTalkChannel implements ChannelDefinition {
         const text = (parsedData?.text?.content || "").trim();
         const senderId = parsedData?.senderStaffId || parsedData?.senderId || "unknown";
 
-        // 二级去重：时间窗口内相同 sender+content 视为重投（兜底 messageId 变化的情况）
+        // 二级去重：3 分钟窗口内相同 sender+content 视为重投
+        // （钉钉 Stream 断线重连后批量补推，间隔可达 60s+）
         const contentKey = `${senderId}:${text}`;
         const now = Date.now();
         const lastTime = this.recentMessages.get(contentKey);
-        if (lastTime && now - lastTime < 5000) {
+        if (lastTime && now - lastTime < 180_000) {
+          console.log(`    [dingtalk] 重投拦截(${Math.round((now - lastTime) / 1000)}s): ${text.slice(0, 30)}`);
           return { status: "SUCCESS" };
         }
         this.recentMessages.set(contentKey, now);
@@ -97,10 +99,10 @@ export class DingTalkChannel implements ChannelDefinition {
             if (first) this.processedIds.delete(first);
           }
         }
-        // 清理过期的时间窗口记录
-        if (this.recentMessages.size > 200) {
+        // 清理过期记录（5 分钟前的不再需要）
+        if (this.recentMessages.size > 100) {
           for (const [key, time] of this.recentMessages) {
-            if (now - time > 10000) this.recentMessages.delete(key);
+            if (now - time > 300_000) this.recentMessages.delete(key);
           }
         }
 
