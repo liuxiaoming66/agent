@@ -34,7 +34,6 @@ export async function agentLoop(
   opts?: AgentLoopOptions,
 ) {
   let step = 0;
-  console.log('model',model)
   const modelId: string = model.modelId ?? "unknown";
   resetHistory();
 
@@ -166,11 +165,6 @@ export async function agentLoop(
         console.log(`  [Cost] $${stepRecord.cost.toFixed(5)} · ⚪ 未命中缓存`);
       }
     }
-    // if (budget.used > budget.limit) {
-    //   console.log("\n[Token 预算耗尽，强制停止]");
-    //   break;
-    // }
-
     if (!hasToolCall) {
       if (fullText) console.log();
       break;

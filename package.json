@@ -4,9 +4,13 @@
   "description": "",
   "type": "module",
   "main": "index.js",
+  "bin": {
+    "super-agent": "src/index.ts"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "init": "tsx src/index.ts init",
     "continue": "tsx src/index.ts --continue"
   },
   "keywords": [],
@@ -23,7 +27,8 @@
     "dingtalk-stream": "2.1.6-beta.1",
     "dotenv": "^17.4.2",
     "hono": "^4.12.31",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
