@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calculator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            color: #fff;
+        }
+
+        /* 背景 */
+        .bg {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .bg::before {
+            content: '';
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.15), transparent 70%);
+            top: -200px;
+            right: -100px;
+        }
+
+        .bg::after {
+            content: '';
+            position: absolute;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(168, 85, 247, 0.1), transparent 70%);
+            bottom: -200px;
+            left: -100px;
+        }
+
+        .app {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            gap: 24px;
+            padding: 20px;
+            max-width: 100vw;
+        }
+
+        /* 计算器主体 */
+        .calculator {
+            width: 360px;
+            background: rgba(20, 20, 30, 0.8);
+            border-radius: 28px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(40px);
+            box-shadow:
+                0 40px 80px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        /* 显示屏 */
+        .display {
+            padding: 32px 28px 24px;
+            min-height: 180px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .display::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 20px;
+            right: 20px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+        }
+
+        .expression {
+            font-size: 18px;
+            color: #64748b;
+            text-align: right;
+            min-height: 28px;
+            word-break: break-all;
+            line-height: 1.4;
+            transition: color 0.2s;
+            margin-bottom: 8px;
+        }
+
+        .expression.has-value {
+            color: #94a3b8;
+        }
+
+        .result {
+            font-size: 52px;
+            font-weight: 300;
+            text-align: right;
+            letter-spacing: -1px;
+            color: #f1f5f9;
+            line-height: 1.1;
+            word-break: break-all;
+            transition: all 0.2s ease;
+            min-height: 58px;
+            display: flex;
+            align-items: flex-end;
+            justify-content: flex-end;
+        }
+
+        .result.shrink {
+            font-size: 38px;
+        }
+
+        .result.shrink-more {
+            font-size: 28px;
+        }
+
+        /* 按钮区域 */
+        .buttons {
+            padding: 16px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+        }
+
+        .btn {
+            height: 68px;
+            border-radius: 18px;
+            border: none;
+            font-size: 22px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            outline: none;
+        }
+
+        .btn::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 18px;
+            opacity: 0;
+            transition: opacity 0.15s;
+            background: radial-gradient(circle at center, rgba(255,255,255,0.3), transparent 70%);
+        }
+
+        .btn:active::after {
+            opacity: 1;
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+
+        /* 数字键 */
+        .btn-num {
+            background: rgba(255, 255, 255, 0.07);
+            color: #f1f5f9;
+        }
+
+        .btn-num:hover {
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        /* 功能键 */
+        .btn-func {
+            background: rgba(255, 255, 255, 0.04);
+            color: #a5b4fc;
+            font-size: 19px;
+        }
+
+        .btn-func:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        /* 运算符 */
+        .btn-op {
+            background: linear-gradient(135deg, #6366f1, #7c3aed);
+            color: #fff;
+            font-size: 26px;
+            box-shadow: 0 4px 16px rgba(99, 102, 241, 0.25);
+        }
+
+        .btn-op:hover {
+            box-shadow: 0 4px 24px rgba(99, 102, 241, 0.4);
+            filter: brightness(1.1);
+        }
+
+        .btn-op.active {
+            background: linear-gradient(135deg, #818cf8, #a78bfa);
+            box-shadow: 0 4px 24px rgba(99, 102, 241, 0.5);
+        }
+
+        /* 等号 */
+        .btn-eq {
+            background: linear-gradient(135deg, #06b6d4, #6366f1);
+            color: #fff;
+            font-size: 28px;
+            box-shadow: 0 4px 16px rgba(6, 182, 212, 0.25);
+        }
+
+        .btn-eq:hover {
+            box-shadow: 0 4px 24px rgba(6, 182, 212, 0.4);
+            filter: brightness(1.1);
+        }
+
+        /* 0 键占两格 */
+        .btn-zero {
+            grid-column: span 2;
+        }
+
+        /* 历史记录面板 */
+        .history-panel {
+            width: 280px;
+            max-height: 580px;
+            background: rgba(20, 20, 30, 0.6);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(40px);
+            box-shadow: 0 40px 80px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .history-header {
+            padding: 24px 24px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .history-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .clear-history {
+            background: none;
+            border: none;
+            color: #475569;
+            font-size: 13px;
+            cursor: pointer;
+            padding: 4px 10px;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .clear-history:hover {
+            color: #f87171;
+            background: rgba(248, 113, 113, 0.1);
+        }
+
+        .history-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+
+        .history-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .history-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .history-item {
+            padding: 14px 16px;
+            border-radius: 14px;
+            margin-bottom: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            animation: slideIn 0.3s ease;
+        }
+
+        .history-item:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .history-item .h-expr {
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 4px;
+        }
+
+        .history-item .h-result {
+            font-size: 20px;
+            font-weight: 500;
+            color: #c7d2fe;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .history-empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: #334155;
+            font-size: 14px;
+        }
+
+        .history-empty .empty-icon {
+            font-size: 36px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        /* 键盘提示 */
+        .keyboard-hint {
+            text-align: center;
+            padding: 12px;
+            font-size: 11px;
+            color: #1e293b;
+            letter-spacing: 0.5px;
+        }
+
+        /* 响应式 */
+        @media (max-width: 720px) {
+            .app {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .history-panel {
+                width: 360px;
+                max-height: 300px;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .calculator {
+                width: 100%;
+                border-radius: 0;
+            }
+
+            .history-panel {
+                width: 100%;
+                border-radius: 0;
+            }
+
+            .btn {
+                height: 60px;
+            }
+        }
+
+        /* 按键涟漪效果 */
+        @keyframes ripple {
+            to {
+                transform: scale(2.5);
+                opacity: 0;
+            }
+        }
+
+        .ripple {
+            position: absolute;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            width: 40px;
+            height: 40px;
+            transform: scale(0);
+            animation: ripple 0.5s ease-out;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="bg"></div>
+
+    <div class="app">
+        <div class="calculator">
+            <div class="display">
+                <div class="expression" id="expression"></div>
+                <div class="result" id="result">0</div>
+            </div>
+            <div class="buttons">
+                <button class="btn btn-func" data-action="clear">AC</button>
+                <button class="btn btn-func" data-action="negate">+/−</button>
+                <button class="btn btn-func" data-action="percent">%</button>
+                <button class="btn btn-op" data-action="op" data-op="÷">÷</button>
+
+                <button class="btn btn-num" data-action="num" data-val="7">7</button>
+                <button class="btn btn-num" data-action="num" data-val="8">8</button>
+                <button class="btn btn-num" data-action="num" data-val="9">9</button>
+                <button class="btn btn-op" data-action="op" data-op="×">×</button>
+
+                <button class="btn btn-num" data-action="num" data-val="4">4</button>
+                <button class="btn btn-num" data-action="num" data-val="5">5</button>
+                <button class="btn btn-num" data-action="num" data-val="6">6</button>
+                <button class="btn btn-op" data-action="op" data-op="−">−</button>
+
+                <button class="btn btn-num" data-action="num" data-val="1">1</button>
+                <button class="btn btn-num" data-action="num" data-val="2">2</button>
+                <button class="btn btn-num" data-action="num" data-val="3">3</button>
+                <button class="btn btn-op" data-action="op" data-op="+">+</button>
+
+                <button class="btn btn-num btn-zero" data-action="num" data-val="0">0</button>
+                <button class="btn btn-num" data-action="decimal">.</button>
+                <button class="btn btn-eq" data-action="equals">=</button>
+            </div>
+            <div class="keyboard-hint">⌨ 支持键盘输入</div>
+        </div>
+
+        <div class="history-panel">
+            <div class="history-header">
+                <h3>📋 历史记录</h3>
+                <button class="clear-history" id="clearHistory">清空</button>
+            </div>
+            <div class="history-list" id="historyList">
+                <div class="history-empty">
+                    <div class="empty-icon">🧮</div>
+                    <div>暂无计算记录</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== 计算器状态 =====
+        const state = {
+            current: '0',       // 当前输入
+            previous: null,     // 上一个操作数
+            operator: null,     // 当前运算符
+            justEvaluated: false, // 刚按了等号
+            history: [],        // 历史记录
+        };
+
+        const $result = document.getElementById('result');
+        const $expression = document.getElementById('expression');
+        const $historyList = document.getElementById('historyList');
+
+        // ===== 更新显示 =====
+        function updateDisplay() {
+            let display = state.current;
+
+            // 格式化数字显示
+            if (!isNaN(parseFloat(display)) && isFinite(display)) {
+                const parts = display.split('.');
+                // 整数部分添加千分位
+                if (parts[0].length > 3 && !display.endsWith('.')) {
+                    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                }
+                display = parts.join('.');
+            }
+
+            $result.textContent = display;
+
+            // 根据长度调整字号
+            $result.classList.remove('shrink', 'shrink-more');
+            if (display.length > 12) {
+                $result.classList.add('shrink-more');
+            } else if (display.length > 8) {
+                $result.classList.add('shrink');
+            }
+
+            // 表达式显示
+            if (state.operator && state.previous !== null) {
+                let prev = state.previous;
+                if (!isNaN(parseFloat(prev)) && isFinite(prev)) {
+                    const pp = prev.split('.');
+                    if (pp[0].length > 3) {
+                        pp[0] = pp[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                    }
+                    prev = pp.join('.');
+                }
+                $expression.textContent = `${prev} ${state.operator}`;
+                $expression.classList.add('has-value');
+            } else {
+                $expression.textContent = '';
+                $expression.classList.remove('has-value');
+            }
+
+            // 更新运算符高亮
+            document.querySelectorAll('.btn-op').forEach(btn => {
+                btn.classList.remove('active');
+                if (state.operator && btn.dataset.op === state.operator && !state.justEvaluated) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        // ===== 计算逻辑 =====
+        function calculate(a, b, op) {
+            a = parseFloat(a);
+            b = parseFloat(b);
+            switch (op) {
+                case '+': return a + b;
+                case '−': return a - b;
+                case '×': return a * b;
+                case '÷': return b === 0 ? 'Error' : a / b;
+                default: return b;
+            }
+        }
+
+        function formatResult(num) {
+            if (num === 'Error') return 'Error';
+            if (isNaN(num) || !isFinite(num)) return 'Error';
+
+            // 处理浮点精度
+            let str = parseFloat(num.toPrecision(12)).toString();
+
+            // 如果结果太长，用科学计数法
+            if (str.replace(/[-.]/g, '').length > 15) {
+                str = num.toExponential(6);
+            }
+
+            return str;
+        }
+
+        // ===== 操作处理 =====
+        function inputNumber(val) {
+            if (state.justEvaluated) {
+                state.current = val;
+                state.previous = null;
+                state.operator = null;
+                state.justEvaluated = false;
+            } else if (state.current === '0' || state.current === 'Error') {
+                state.current = val;
+            } else if (state.current.replace(/[-.]/g, '').length < 15) {
+                state.current += val;
+            }
+            updateDisplay();
+        }
+
+        function inputDecimal() {
+            if (state.justEvaluated) {
+                state.current = '0.';
+                state.previous = null;
+                state.operator = null;
+                state.justEvaluated = false;
+            } else if (!state.current.includes('.')) {
+                state.current += '.';
+            }
+            updateDisplay();
+        }
+
+        function inputOperator(op) {
+            if (state.current === 'Error') return;
+
+            if (state.operator && state.previous !== null && !state.justEvaluated) {
+                // 链式计算
+                const result = calculate(state.previous, state.current, state.operator);
+                const formatted = formatResult(result);
+                addHistory(state.previous, state.current, state.operator, formatted);
+                state.previous = formatted;
+                state.current = formatted;
+            } else {
+                state.previous = state.current;
+            }
+
+            state.operator = op;
+            state.current = '0';
+
+            // 如果之前刚按了等号，保持 previous
+            if (state.justEvaluated) {
+                // previous 已经设置好了
+            }
+
+            state.justEvaluated = false;
+            updateDisplay();
+        }
+
+        function evaluate() {
+            if (state.operator === null || state.previous === null) return;
+            if (state.current === 'Error') return;
+
+            const a = state.previous;
+            const b = state.current === '0' && state.justEvaluated ? state.previous : state.current;
+            const op = state.operator;
+            const result = calculate(a, b, op);
+            const formatted = formatResult(result);
+
+            addHistory(a, b, op, formatted);
+
+            state.current = formatted;
+            state.previous = null;
+            state.operator = null;
+            state.justEvaluated = true;
+            updateDisplay();
+        }
+
+        function clearAll() {
+            state.current = '0';
+            state.previous = null;
+            state.operator = null;
+            state.justEvaluated = false;
+            updateDisplay();
+        }
+
+        function negate() {
+            if (state.current === '0' || state.current === 'Error') return;
+            if (state.current.startsWith('-')) {
+                state.current = state.current.slice(1);
+            } else {
+                state.current = '-' + state.current;
+            }
+            updateDisplay();
+        }
+
+        function percent() {
+            if (state.current === 'Error') return;
+            const val = parseFloat(state.current) / 100;
+            state.current = formatResult(val);
+            updateDisplay();
+        }
+
+        function backspace() {
+            if (state.justEvaluated || state.current === 'Error') return;
+            if (state.current.length <= 1 || (state.current.length === 2 && state.current.startsWith('-'))) {
+                state.current = '0';
+            } else {
+                state.current = state.current.slice(0, -1);
+            }
+            updateDisplay();
+        }
+
+        // ===== 历史记录 =====
+        function addHistory(a, b, op, result) {
+            state.history.unshift({ expr: `${a} ${op} ${b}`, result });
+            if (state.history.length > 50) state.history.pop();
+            renderHistory();
+        }
+
+        function renderHistory() {
+            if (state.history.length === 0) {
+                $historyList.innerHTML = `
+                    <div class="history-empty">
+                        <div class="empty-icon">🧮</div>
+                        <div>暂无计算记录</div>
+                    </div>`;
+                return;
+            }
+
+            $historyList.innerHTML = state.history.map((item, i) => `
+                <div class="history-item" data-index="${i}">
+                    <div class="h-expr">${item.expr} =</div>
+                    <div class="h-result">${item.result}</div>
+                </div>
+            `).join('');
+
+            // 点击历史记录回填
+            $historyList.querySelectorAll('.history-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    const idx = parseInt(el.dataset.index);
+                    state.current = state.history[idx].result;
+                    state.previous = null;
+                    state.operator = null;
+                    state.justEvaluated = true;
+                    updateDisplay();
+                });
+            });
+        }
+
+        document.getElementById('clearHistory').addEventListener('click', () => {
+            state.history = [];
+            renderHistory();
+        });
+
+        // ===== 按钮事件 =====
+        document.querySelector('.buttons').addEventListener('click', (e) => {
+            const btn = e.target.closest('.btn');
+            if (!btn) return;
+
+            // 涟漪效果
+            const ripple = document.createElement('span');
+            ripple.className = 'ripple';
+            const rect = btn.getBoundingClientRect();
+            ripple.style.left = (e.clientX - rect.left - 20) + 'px';
+            ripple.style.top = (e.clientY - rect.top - 20) + 'px';
+            btn.appendChild(ripple);
+            setTimeout(() => ripple.remove(), 500);
+
+            const action = btn.dataset.action;
+
+            switch (action) {
+                case 'num': inputNumber(btn.dataset.val); break;
+                case 'decimal': inputDecimal(); break;
+                case 'op': inputOperator(btn.dataset.op); break;
+                case 'equals': evaluate(); break;
+                case 'clear': clearAll(); break;
+                case 'negate': negate(); break;
+                case 'percent': percent(); break;
+            }
+        });
+
+        // ===== 键盘支持 =====
+        document.addEventListener('keydown', (e) => {
+            const key = e.key;
+
+            if (key >= '0' && key <= '9') {
+                inputNumber(key);
+                highlightBtn(`[data-val="${key}"]`);
+            } else if (key === '.') {
+                inputDecimal();
+                highlightBtn('[data-action="decimal"]');
+            } else if (key === '+') {
+                inputOperator('+');
+                highlightBtn('[data-op="+"]');
+            } else if (key === '-') {
+                inputOperator('−');
+                highlightBtn('[data-op="−"]');
+            } else if (key === '*') {
+                inputOperator('×');
+                highlightBtn('[data-op="×"]');
+            } else if (key === '/') {
+                e.preventDefault();
+                inputOperator('÷');
+                highlightBtn('[data-op="÷"]');
+            } else if (key === 'Enter' || key === '=') {
+                evaluate();
+                highlightBtn('[data-action="equals"]');
+            } else if (key === 'Escape' || key === 'c' || key === 'C') {
+                clearAll();
+                highlightBtn('[data-action="clear"]');
+            } else if (key === 'Backspace') {
+                backspace();
+            } else if (key === '%') {
+                percent();
+                highlightBtn('[data-action="percent"]');
+            }
+        });
+
+        function highlightBtn(selector) {
+            const btn = document.querySelector(selector);
+            if (!btn) return;
+            btn.style.transform = 'scale(0.95)';
+            setTimeout(() => btn.style.transform = '', 100);
+        }
+
+        // 初始化
+        updateDisplay();
+    </script>
+</body>
+</html>

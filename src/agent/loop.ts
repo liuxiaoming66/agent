@@ -1,62 +1,176 @@
 import { streamText, type ModelMessage } from "ai";
+import {
+  detect,
+  recordCall,
+  recordResult,
+  resetHistory,
+} from "./loop-detection.js";
+import { isRetryable, calculateDelay, sleep } from "./retry.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { normalizeUsage, type UsageTracker } from "../usage/tracker.js";
 
-const MAX_STEPS = 10;
+const MAX_STEPS = 15;
+const MAX_RETRIES = 3;
+
+export interface BudgetState {
+  used: number;
+  limit: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface AgentLoopOptions {
+  /** 每产生一段文本增量时回调（供流式通道使用） */
+  onTextDelta?: (delta: string, accumulated: string) => void;
+}
 
 export async function agentLoop(
   model: any,
-  tools: any,
+  registry: ToolRegistry,
   messages: ModelMessage[],
   system: string,
+  budget: BudgetState,
+  tracker?: UsageTracker,
+  opts?: AgentLoopOptions,
 ) {
   let step = 0;
+  const modelId: string = model.modelId ?? "unknown";
+  resetHistory();
 
   while (step < MAX_STEPS) {
     step++;
     console.log(`\n--- Step ${step} ---`);
 
-    const result = streamText({
-      model,
-      system,
-      tools,
-      messages,
-      // 不设 stopWhen，每次只跑一步
-    });
-
     let hasToolCall = false;
     let fullText = "";
+    let shouldBreak = false;
+    let lastToolCall: { name: string; input: unknown } | null = null;
+    let stepResponse: Awaited<ReturnType<typeof streamText>["response"]>;
+    let stepUsage: Awaited<ReturnType<typeof streamText>["usage"]>;
 
-    for await (const part of result.fullStream) {
-      switch (part.type) {
-        case "text-delta":
-          process.stdout.write(part.text);
-          fullText += part.text;
-          break;
+    // 步骤级重试：包裹整个 stream 消费过程
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const deferredHint = registry.getDeferredToolSummary();
+        const finalSystem = deferredHint ? `${system}\n${deferredHint}` : system;
+        const result = streamText({
+          model,
+          system: finalSystem,
+          tools: registry.toAISDKFormat(),
+          messages,
+          maxRetries: 0,
+          onError: () => {},
+        });
 
-        case "tool-call":
-          hasToolCall = true;
-          console.log(
-            `  [调用: ${part.toolName}(${JSON.stringify(part.input)})]`,
-          );
-          break;
+        for await (const part of result.fullStream) {
+          switch (part.type) {
+            case "text-delta":
+              process.stdout.write(part.text);
+              fullText += part.text;
+              opts?.onTextDelta?.(part.text, fullText);
+              break;
 
-        case "tool-result":
-          console.log(`  [结果: ${JSON.stringify(part.output)}]`);
-          break;
+            case "tool-call": {
+              hasToolCall = true;
+              lastToolCall = { name: part.toolName, input: part.input };
+              console.log(
+                `  [调用: ${part.toolName}(${JSON.stringify(part.input)})]`,
+              );
+
+              const detection = detect(part.toolName, part.input);
+              if (detection.stuck) {
+                console.log(`  ${detection.message}`);
+                if (detection.level === "critical") {
+                  shouldBreak = true;
+                } else {
+                  messages.push({
+                    role: "user" as const,
+                    content: `[系统提醒] ${detection.message}。请换一个思路解决问题，不要重复同样的操作。`,
+                  });
+                }
+              }
+              recordCall(part.toolName, part.input);
+              break;
+            }
+
+            case "tool-result":
+              console.log(`  [结果: ${JSON.stringify(part.output)}]`);
+              if (lastToolCall) {
+                recordResult(
+                  lastToolCall.name,
+                  lastToolCall.input,
+                  part.output,
+                );
+              }
+              break;
+          }
+        }
+
+        stepResponse = await result.response;
+        stepUsage = await result.usage;
+        break;
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        // 重试耗尽或不可重试：降级为错误消息返回，不让异常打崩进程
+        if (attempt > MAX_RETRIES || !isRetryable(error as Error)) {
+          console.log(`\n[模型调用失败] ${errMsg}`);
+          messages.push({
+            role: "assistant",
+            content: `[系统] 本轮模型调用失败（${errMsg}），已重试 ${Math.min(attempt - 1, MAX_RETRIES)} 次。请稍后重试，或拆小任务减少单次请求压力。`,
+          });
+          return;
+        }
+        const delay = calculateDelay(attempt);
+        console.log(
+          `  [重试] 第 ${attempt}/${MAX_RETRIES} 次失败，${delay}ms 后重试...`,
+        );
+        await sleep(delay);
+        hasToolCall = false;
+        fullText = "";
+        shouldBreak = false;
+        lastToolCall = null;
       }
     }
 
-    // 拿到这一步的完整结果，追加到消息历史
-    const stepMessages = await result.response;
-    messages.push(...stepMessages.messages);
+    if (shouldBreak) {
+      console.log("\n[循环检测触发，Agent 已停止]");
+      break;
+    }
 
-    // 退出条件：模型没有调用任何工具，说明它认为可以直接回复了
+    messages.push(...stepResponse!.messages);
+
+    // Token 预算追踪：budget 由调用方持有，跨轮持续累计
+    const inp = stepUsage?.inputTokens ?? 0;
+    const out = stepUsage?.outputTokens ?? 0;
+    budget.inputTokens += inp;
+    budget.outputTokens += out;
+    budget.used += inp + out;
+    const pct = Math.round((budget.used / budget.limit) * 100);
+    console.log(
+      `  [Token] 输入: ${budget.inputTokens} | 输出: ${budget.outputTokens} | 总计: ${budget.used}`,
+    );
+
+    // 用量统计：归一化后记入 tracker，每步明确标注缓存命中情况
+    const norm = normalizeUsage(stepUsage);
+    const stepRecord = tracker?.record(modelId, norm);
+    if (stepRecord) {
+      if (norm.cacheReadTokens > 0) {
+        const totalInput =
+          norm.inputTokens + norm.cacheReadTokens + norm.cacheWriteTokens;
+        const hitRate = Math.round((norm.cacheReadTokens / totalInput) * 100);
+        console.log(
+          `  [Cost] $${stepRecord.cost.toFixed(5)} · ✅ 缓存命中 ${norm.cacheReadTokens} tokens（命中率 ${hitRate}%）`,
+        );
+      } else {
+        console.log(`  [Cost] $${stepRecord.cost.toFixed(5)} · ⚪ 未命中缓存`);
+      }
+    }
     if (!hasToolCall) {
       if (fullText) console.log();
       break;
     }
 
-    // 还有工具调用 → 继续循环，让模型看到工具结果后继续思考
-    console.log("  → 模型还在工作，继续下一步...");
+    console.log("  → 继续下一步...");
   }
 
   if (step >= MAX_STEPS) {

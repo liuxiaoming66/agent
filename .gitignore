@@ -1,2 +1,8 @@
 .env
 node_modules/
+.sessions/
+.memory/
+.rag/
+.qoder/
+.skills/
+.cron/
